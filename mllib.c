@@ -1,4 +1,5 @@
 #include "minilua.h"
+#include <time.h>
 
 #define BRET(b)lua_pushnumber(L,(lua_Number)(int)(b));return 1;
 
@@ -423,7 +424,7 @@ static const char *match(MatchState *ms, const char *s, const char *p) {
                     p += 2;
                     if (*p != '[')
                         luaL_error(ms->L, "missing "LUA_QL("[")" after "
-                    LUA_QL("%%f")" in pattern");
+                                          LUA_QL("%%f")" in pattern");
                     ep = classend(ms, p);
                     previous = (s == ms->src_init) ? '\0' : *(s - 1);
                     if (matchbracketclass(uchar(previous), p, ep - 1) ||
@@ -825,7 +826,7 @@ static int str_format(lua_State *L) {
                 }
                 default: {
                     return luaL_error(L, "invalid option "LUA_QL("%%%c")" to "
-                    LUA_QL("format"), *(strfrmt - 1));
+                                         LUA_QL("format"), *(strfrmt - 1));
                 }
             }
             luaL_addlstring(&b, buff, strlen(buff));
@@ -1198,9 +1199,15 @@ static int os_exit(lua_State *L) {
     exit(luaL_optint(L, 1, EXIT_SUCCESS));
 }
 
+static int os_clock(lua_State *L) {
+    lua_pushnumber(L, ((lua_Number) clock()) / (lua_Number) CLOCKS_PER_SEC);
+    return 1;
+}
+
 const luaL_Reg syslib[] = {
         {"exit",   os_exit},
         {"remove", os_remove},
+        {"clock",  os_clock},
         {NULL, NULL}
 };
 
