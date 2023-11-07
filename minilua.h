@@ -45,6 +45,20 @@ typedef unsigned __int64 U64;
 typedef unsigned long long U64;
 #endif
 
+#define LUA_TNONE           (-1)
+
+#define LUA_TNIL            0
+#define LUA_TBOOLEAN        1
+#define LUA_TLIGHTUSERDATA  2
+#define LUA_TNUMBER         3
+#define LUA_TSTRING         4
+#define LUA_TTABLE          5
+#define LUA_TFUNCTION       6
+#define LUA_TUSERDATA       7
+#define LUA_TTHREAD         8
+
+#define LUA_NUMTYPES        9
+
 typedef enum {
     TM_INDEX,       // 当表中的一个键在表中不存在时，Lua 会调用这个元方法来获取该键对应的值
     TM_NEWINDEX,    // 当表中的一个键被添加或修改时，Lua 会调用这个元方法来设置该键对应的值
@@ -168,8 +182,6 @@ typedef enum UnOpr {
 
 #define LUA_QL(x)"'"x"'"
 #define luai_apicheck(L, o){(void)L;}
-#define lua_number2str(s, n)sprintf((s),"%.14g",(n))
-#define lua_str2number(s, p)strtod((s),(p))
 #define luai_numadd(a, b)((a)+(b))
 #define luai_numsub(a, b)((a)-(b))
 #define luai_nummul(a, b)((a)*(b))
@@ -181,19 +193,14 @@ typedef enum UnOpr {
 #define luai_numlt(a, b)((a)<(b))
 #define luai_numle(a, b)((a)<=(b))
 #define luai_numisnan(a)(!luai_numeq((a),(a)))
+#define lua_number2str(s, n)sprintf((s),"%.14g",(n))
+#define lua_str2number(s, p)strtod((s),(p))
 #define lua_number2int(i, d)((i)=(int)(d))
 #define lua_number2integer(i, d)((i)=(lua_Integer)(d))
 #define LUAI_THROW(L, c)longjmp((c)->b,1)
 #define LUAI_TRY(L, c, a)if(setjmp((c)->b)==0){a}
 #define lua_pclose(L, file)((void)((void)L,file),0)
 #define lua_upvalueindex(i)((-10002)-(i))
-
-typedef struct lua_State lua_State;
-
-typedef int(*lua_CFunction)(lua_State *L);
-
-typedef double lua_Number;
-typedef ptrdiff_t lua_Integer;
 
 typedef struct lua_Debug {
     int event;
@@ -209,6 +216,19 @@ typedef struct lua_Debug {
     int i_ci;
 } lua_Debug;
 
+typedef struct lua_State lua_State;
+typedef int(*lua_CFunction)(lua_State *L);
+typedef double lua_Number;
+typedef ptrdiff_t lua_Integer;
+typedef const char *(*lua_Reader)(lua_State *L, void *ud, size_t *sz);
+typedef void *(*lua_Alloc)(void *userdata, void *ptr, size_t oldSize, size_t newSize);
+typedef void(*lua_Hook)(lua_State *L, lua_Debug *ar);
+typedef unsigned int lu_int32;
+typedef size_t lu_mem;
+typedef ptrdiff_t l_mem;
+typedef unsigned char lu_byte;
+typedef double l_uacNumber;
+
 typedef struct luaL_Reg {
     const char *name;
     lua_CFunction func;
@@ -221,47 +241,48 @@ typedef struct luaL_Buffer {
     char buffer[BUFSIZ];
 } luaL_Buffer;
 
-typedef const char *(*lua_Reader)(lua_State *L, void *ud, size_t *sz);
-
-typedef void *(*lua_Alloc)(void *ud, void *ptr, size_t osize, size_t nsize);
-
-typedef void(*lua_Hook)(lua_State *L, lua_Debug *ar);
-
-typedef unsigned int lu_int32;
-typedef size_t lu_mem;
-typedef ptrdiff_t l_mem;
-typedef unsigned char lu_byte;
 #define IntPoint(p)((unsigned int)(lu_mem)(p))
+
+// 在这个设计中，L_UMaxAlign 被用作一个占位符，它的大小被设计为以上三种数据类型中最大的那个。
+// 这样可以确保在实际使用中，其他数据结构可以依据它的大小来做出正确的对齐。
+// 这在处理底层内存布局时尤为重要，因为一些硬件平台要求特定类型的数据需要按照特定的地址对齐方式进行存储和访问。
 typedef union {
     double u;
     void *s;
     long l;
-} L_Umaxalign;
-typedef double l_uacNumber;
+} L_UMaxAlign;
+
 #define check_exp(c, e)(e)
 #define UNUSED(x)((void)(x))
 #define cast(t, exp)((t)(exp))
 #define cast_byte(i)cast(lu_byte,(i))
 #define cast_num(i)cast(lua_Number,(i))
 #define cast_int(i)cast(int,(i))
+
 typedef lu_int32 Instruction;
+
 #define condhardstacktests(x)((void)0)
+
 typedef union GCObject GCObject;
+
 typedef struct GCheader {
-    GCObject *next;
-    lu_byte tt;
-    lu_byte marked;
+    GCObject *next;     // 用于指向下一个垃圾回收对象
+    lu_byte tt;         // 用于表示对象的类型标记（type tag）
+    lu_byte marked;     // 用于表示对象的标记信息，通常用于在垃圾回收过程中标记对象的存活状态
 } GCheader;
+
 typedef union {
-    GCObject *gc;
-    void *p;
-    lua_Number n;
-    int b;
+    GCObject *gc;   // 用于指向 Lua 中的垃圾回收对象
+    void *p;        // 在 Lua 中，这种指针通常被用于表示通用的指针类型
+    lua_Number n;   // 通常用于表示 Lua 中的浮点数
+    int b;          // 用于表示布尔值
 } Value;
+
 typedef struct lua_TValue {
-    Value value;
-    int tt;
+    Value value;    // 用于存储实际的值数据
+    int tt;         // 它被用来标识值的类型（type tag）
 } TValue;
+
 #define ttisnil(o)(ttype(o)==0)
 #define ttisnumber(o)(ttype(o)==3)
 #define ttisstring(o)(ttype(o)==4)
@@ -286,7 +307,7 @@ typedef struct lua_TValue {
 #define l_isfalse(o)(ttisnil(o)||(ttisboolean(o)&&bvalue(o)==0))
 #define checkconsistency(obj)
 #define checkliveness(g, obj)
-#define setnilvalue(obj)((obj)->tt=0)
+#define setnilvalue(obj)((obj)->tt=LUA_TNIL)
 #define setnvalue(obj, x){TValue*i_o=(obj);i_o->value.n=(x);i_o->tt=3;}
 #define setbvalue(obj, x){TValue*i_o=(obj);i_o->value.b=(x);i_o->tt=1;}
 #define setsvalue(L, obj, x){TValue*i_o=(obj);i_o->value.gc=cast(GCObject*,(x));i_o->tt=4;checkliveness(G(L),i_o);}
@@ -298,24 +319,26 @@ typedef struct lua_TValue {
 #define setobj(L, obj1, obj2){const TValue*o2=(obj2);TValue*o1=(obj1);o1->value=o2->value;o1->tt=o2->tt;checkliveness(G(L),o1);}
 #define setttype(obj, tt)(ttype(obj)=(tt))
 #define iscollectable(o)(ttype(o)>=4)
+
 typedef TValue *StkId;
 
-
 typedef union TString {
-    L_Umaxalign dummy;
+    L_UMaxAlign dummy;      // 这里定义了一个占位成员 dummy，可能是为了确保 TString 的大小满足特定的内存对齐要求
     struct {
-        GCObject *next;
-        lu_byte tt;
-        lu_byte marked;
-        lu_byte reserved;
-        unsigned int hash;
-        size_t len;
+        GCObject *next;     // 指向下一个字符串对象的指针
+        lu_byte tt;         // 类型标记，用于表示该字符串对象的类型
+        lu_byte marked;     // 标记字节，用于在垃圾回收过程中标记对象的状态
+        lu_byte reserved;   // 保留的字节，可能用于未来扩展或对齐
+        unsigned int hash;  // 字符串的哈希值，用于快速比较字符串是否相等
+        size_t len;         // 字符串的长度
     } tsv;
 } TString;
+
 #define getstr(ts)cast(const char*,(ts)+1)
 #define svalue(o)getstr(rawtsvalue(o))
+
 typedef union Udata {
-    L_Umaxalign dummy;
+    L_UMaxAlign dummy;
     struct {
         GCObject *next;
         lu_byte tt;
@@ -325,6 +348,7 @@ typedef union Udata {
         size_t len;
     } uv;
 } Udata;
+
 typedef struct Proto {
     GCObject *next;
     lu_byte tt;
@@ -350,24 +374,27 @@ typedef struct Proto {
     lu_byte is_vararg;
     lu_byte maxstacksize;
 } Proto;
+
 typedef struct LocVar {
     TString *varname;
     int startpc;
     int endpc;
 } LocVar;
+
 typedef struct UpVal {
-    GCObject *next;
-    lu_byte tt;
-    lu_byte marked;
-    TValue *v;
+    GCObject *next;                 // 指向下一个上值对象的指针
+    lu_byte tt;                     // 类型标记，用于表示该上值对象的类型
+    lu_byte marked;                 // 标记字节，用于在垃圾回收过程中标记对象的状态
+    TValue *v;                      // 指向存储值的指针，即指向该上值对应的值对象
     union {
-        TValue value;
-        struct {
-            struct UpVal *prev;
-            struct UpVal *next;
+        TValue value;               // 直接存储值的情况
+        struct {                    // 当上值处于开放状态时，
+            struct UpVal *prev;     // 使用 prev 和 next 指针来构成链表结构
+            struct UpVal *next;     // 以便将上值对象连接到开放上值的链表中
         } l;
     } u;
 } UpVal;
+
 typedef struct CClosure {
     GCObject *next;
     lu_byte tt;
@@ -379,6 +406,7 @@ typedef struct CClosure {
     lua_CFunction f;
     TValue upvalue[1];
 } CClosure;
+
 typedef struct LClosure {
     GCObject *next;
     lu_byte tt;
@@ -390,6 +418,7 @@ typedef struct LClosure {
     struct Proto *p;
     UpVal *upvals[1];
 } LClosure;
+
 typedef union Closure {
     CClosure c;
     LClosure l;
@@ -397,33 +426,38 @@ typedef union Closure {
 
 typedef union TKey {
     struct {
-        Value value;
-        int tt;
-        struct Node *next;
+        Value value;            // 存储键的具体数值。
+        int tt;                 // 类型标记，用于表示键的类型
+        struct Node *next;      // 指向下一个节点的指针，用于在哈希冲突的情况下构成链表
     } nk;
-    TValue tvk;
+    TValue tvk;                 // 作为备用方案，直接存储键的值
 } TKey;
+
 typedef struct Node {
-    TValue i_val;
-    TKey i_key;
+    TValue i_val;   // 用于存储节点的值
+    TKey i_key;     // 用于存储节点的键
 } Node;
+
 typedef struct Table {
-    GCObject *next;
-    lu_byte tt;
-    lu_byte marked;
-    lu_byte flags;
-    lu_byte lsizenode;
-    struct Table *metatable;
-    TValue *array;
-    Node *node;
-    Node *lastfree;
-    GCObject *gclist;
-    int sizearray;
+    GCObject *next;             // 指向下一个表对象的指针
+    lu_byte tt;                 // 类型标记，用于表示该表对象的类型
+    lu_byte marked;             // 标记字节，用于在垃圾回收过程中标记对象的状态
+    lu_byte flags;              // 标志字节，用于表示表的一些特殊标志或属性
+    lu_byte lsizenode;          // 用于表示哈希部分的大小掩码
+    struct Table *metatable;    // 指向该表的元表（metatable）
+    TValue *array;              // 指向存储数组部分的指针
+    Node *node;                 // 指向存储哈希部分节点的指针
+    Node *lastfree;             // 指向最后一个空闲节点的指针，用于快速分配新节点
+    GCObject *gclist;           // 指向下一个待回收对象的指针，用于构成待回收对象链表
+    int sizearray;              // 表示数组部分的大小
 } Table;
+
 #define lmod(s, size)(check_exp((size&(size-1))==0,(cast(int,(s)&((size)-1)))))
 #define twoto(x)((size_t)1<<(x))
 #define sizenode(t)(twoto((t)->lsizenode))
+
 static const TValue luaO_nilobject_;
+
 #define ceillog2(x)(luaO_log2((x)-1)+1)
 
 static int luaO_log2(unsigned int x);
@@ -446,13 +480,16 @@ static const TValue *luaT_gettm(Table *events, TMS event, TString *ename);
 #define iscfunction(o)(ttype(o)==6&&clvalue(o)->c.isC)
 
 typedef struct Zio ZIO;
+
 #define char2int(c)cast(int,cast(unsigned char,(c)))
 #define zgetc(z)(((z)->n--)>0?char2int(*(z)->p++):luaZ_fill(z))
-typedef struct Mbuffer {
-    char *buffer;
-    size_t n;
-    size_t buffsize;
-} Mbuffer;
+
+typedef struct MBuffer {
+    char *buffer;       // 指向存储数据的缓冲区的指针
+    size_t n;           // 表示当前缓冲区中已经存储的数据的大小
+    size_t buffsize;    // 表示整个缓冲区的总大小，即缓冲区能够容纳的最大数据量
+} MBuffer;
+
 #define luaZ_initbuffer(L, buff)((buff)->buffer=NULL,(buff)->buffsize=0)
 #define luaZ_buffer(buff)((buff)->buffer)
 #define luaZ_sizebuffer(buff)((buff)->buffsize)
@@ -460,6 +497,7 @@ typedef struct Mbuffer {
 #define luaZ_resetbuffer(buff)((buff)->n=0)
 #define luaZ_resizebuffer(L, buff, size)(luaM_reallocvector(L,(buff)->buffer,(buff)->buffsize,size,char),(buff)->buffsize=size)
 #define luaZ_freebuffer(L, buff)luaZ_resizebuffer(L,buff,0)
+
 struct Zio {
     size_t n;
     const char *p;
@@ -473,90 +511,97 @@ static int luaZ_fill(ZIO *z);
 struct lua_longjmp;
 #define gt(L)(&L->l_gt)
 #define registry(L)(&G(L)->l_registry)
-typedef struct stringtable {
-    GCObject **hash;
-    lu_int32 nuse;
-    int size;
-} stringtable;
+
+typedef struct {
+    GCObject **hash;    // 用于存储指向字符串对象的指针，这里使用指针数组的方式来实现哈希表，以便快速查找和管理字符串对象
+    lu_int32 nuse;      // 表示当前使用的字符串对象数量
+    int size;           // 表示哈希表的大小，即能容纳的字符串对象的数量
+} StringTable;
+
 typedef struct CallInfo {
-    StkId base;
-    StkId func;
-    StkId top;
-    const Instruction *savedpc;
-    int nresults;
-    int tailcalls;
+    StkId base;                     // 指向当前函数调用的栈底的指针
+    StkId func;                     // 指向表示当前被调用函数的栈位置的指针
+    StkId top;                      // 指向当前函数调用的栈顶的指针
+    const Instruction *savedpc;     // 指向在执行函数调用时需要被恢复的程序计数器（即下一条待执行的指令）
+    int nresults;                   // 期望接收的返回值数量
+    int tailcalls;                  // 表示尾调用的次数
 } CallInfo;
+
 #define curr_func(L)(clvalue(L->ci->func))
 #define ci_func(ci)(clvalue((ci)->func))
 #define f_isLua(ci)(!ci_func(ci)->c.isC)
 #define isLua(ci)(ttisfunction((ci)->func)&&f_isLua(ci))
+
 typedef struct global_State {
-    stringtable strt;
-    lua_Alloc frealloc;
-    void *ud;
-    lu_byte currentwhite;
-    lu_byte gcstate;
-    int sweepstrgc;
-    GCObject *rootgc;
-    GCObject **sweepgc;
-    GCObject *gray;
-    GCObject *grayagain;
-    GCObject *weak;
-    GCObject *tmudata;
-    Mbuffer buff;
-    lu_mem GCthreshold;
-    lu_mem totalbytes;
-    lu_mem estimate;
-    lu_mem gcdept;
-    int gcpause;
-    int gcstepmul;
-    lua_CFunction panic;
-    TValue l_registry;
-    struct lua_State *mainthread;
-    UpVal uvhead;
-    struct Table *mt[(8 + 1)];
-    TString *tmname[TM_N];
+    StringTable strt;                   // 用于存储字符串的哈希表结构，用于快速查找和管理字符串对象
+    lua_Alloc frealloc;                 // 用于内存分配和重新分配的函数指针，可以根据实际需要进行内存管理
+    void *userdata;                     // 一个通用的指针，用于存储用户自定义数据，可以在内存分配和重新分配函数中使用
+    lu_byte currentwhite;               // 表示当前的垃圾回收状态
+    lu_byte gcstate;                    // 表示垃圾回收的状态
+    int sweepstrgc;                     // 用于记录字符串对象的垃圾回收状态
+    GCObject *rootgc;                   // 是一个链表结构，用于管理所有的垃圾回收对象
+    GCObject **sweepgc;                 // 指向当前需要进行垃圾回收的对象列表
+    GCObject *gray;                     // 灰色对象，用于标记阶段的中间状态
+    GCObject *grayagain;                // 再次标记阶段的灰色对象
+    GCObject *weak;                     // 弱引用对象
+    GCObject *tmudata;                  // 用于管理元方法的用户数据对象
+    MBuffer buff;                       // 缓冲区，用于临时存储数据
+    lu_mem GCthreshold;                 // 表示垃圾回收的阈值
+    lu_mem totalbytes;                  // 总字节数
+    lu_mem estimate;                    // 估计的字节数
+    lu_mem gcdept;                      // 垃圾回收深度
+    int gcpause;                        // 垃圾回收暂停
+    int gcstepmul;                      // 垃圾回收步进倍数
+    lua_CFunction panic;                // Lua 运行时的错误处理函数
+    TValue l_registry;                  // 注册表，用于存储全局变量等信息
+    struct lua_State *mainthread;       // 主线程
+    UpVal uvhead;                       // 上值链表的头部
+    struct Table *mt[(8 + 1)];          // 用于存储元表的数组
+    TString *tmname[TM_N];              // 用于存储元方法名称的数组
 } global_State;
+
 struct lua_State {
-    GCObject *next;
-    lu_byte tt;
-    lu_byte marked;
-    lu_byte status;
-    StkId top;
-    StkId base;
-    global_State *l_G;
-    CallInfo *ci;
-    const Instruction *savedpc;
-    StkId stack_last;
-    StkId stack;
-    CallInfo *end_ci;
-    CallInfo *base_ci;
-    int stacksize;
-    int size_ci;
-    unsigned short nCcalls;
-    unsigned short baseCcalls;
-    lu_byte hookmask;
-    lu_byte allowhook;
-    int basehookcount;
-    int hookcount;
-    lua_Hook hook;
-    TValue l_gt;
-    TValue env;
-    GCObject *openupval;
-    GCObject *gclist;
-    struct lua_longjmp *errorJmp;
-    ptrdiff_t errfunc;
+    GCObject *next;                     // 指向下一个 GCObject 结构的指针，用于在 Lua 的垃圾回收器中组织对象
+    lu_byte tt;                         // 表示 Lua 对象的类型标记，用于判断该对象的具体类型，例如是表、函数还是其他类型的对象
+    lu_byte marked;                     // 用于标记对象是否被垃圾回收器标记为可回收对象
+    lu_byte status;                     // 表示 Lua 状态机的状态，例如是运行中还是挂起等
+    StkId top;                          // 指向当前栈顶的指针，用于操作 Lua 栈中的元素
+    StkId base;                         // 指向当前栈底的指针，用于操作 Lua 栈中的元素
+    global_State *l_G;                  // 指向 Lua 全局状态的指针，其中包含了 Lua 中全局的状态信息
+    CallInfo *ci;                       // 指向当前调用信息结构的指针，用于管理 Lua 函数调用的相关信息
+    const Instruction *savedpc;         // 指向保存的指令的指针，用于在执行 Lua 函数时保存当前执行的指令位置
+    StkId stack_last;                   // 指向栈中最后一个元素的指针，用于辅助管理 Lua 栈的扩展和缩减
+    StkId stack;                        // 指向 Lua 栈的起始地址，用于操作 Lua 栈中的元素
+    CallInfo *end_ci;                   // 指向调用链表的尾部，用于管理函数调用的链表结构
+    CallInfo *base_ci;                  // 指向调用链表的头部，用于管理函数调用的链表结构
+    int stacksize;                      // 表示当前 Lua 栈的大小，即能容纳元素的数量
+    int size_ci;                        // 表示当前调用链表中的 CallInfo 结构的数量
+    unsigned short nCcalls;             // 表示当前 C 函数调用的数量
+    unsigned short baseCcalls;          // 表示基本的 C 函数调用数量
+    lu_byte hookmask;                   // 表示钩子函数的掩码，用于控制钩子函数的行为
+    lu_byte allowhook;                  // 表示是否允许调用钩子函数
+    int basehookcount;                  // 基本的钩子计数
+    int hookcount;                      // 钩子计数
+    lua_Hook hook;                      // 指向钩子函数的指针，用于设置 Lua 的钩子函数
+    TValue l_gt;                        // 全局表（_G）对应的 TValue 结构
+    TValue env;                         // 表示当前环境对应的 TValue 结构
+    GCObject *openupval;                // 指向打开的 Upvalue 对象的指针，用于管理 Upvalue 对象的生命周期
+    GCObject *gclist;                   // 用于管理对象的垃圾回收链表
+    struct lua_longjmp *errorJmp;       // 指向错误跳转结构的指针，用于处理错误跳转
+    ptrdiff_t errfunc;                  // 表示当前错误处理函数在栈中的位置
 };
-#define G(L)(L->l_G)
+
+#define G(L) (L->l_G)
+
 union GCObject {
-    GCheader gch;
-    union TString ts;
-    union Udata u;
-    union Closure cl;
-    struct Table h;
-    struct Proto p;
-    struct UpVal uv;
-    struct lua_State th;
+    GCheader gch;           // 表示垃圾回收对象的头部信息，包括对象的类型标记、引用计数等元数据
+    union TString ts;       // 联合体中包含了对字符串对象的定义
+    union Udata u;          // 包含用户自定义数据（userdata）
+    union Closure cl;       // 这个联合体包含了对闭包（函数）对象的定义
+    struct Table h;         // 用于表示表对象
+    struct Proto p;         // 用于表示函数原型
+    struct UpVal uv;        // 用于表示 Upvalue（上值）对象
+    struct lua_State th;    // 用于表示 Lua 状态机
 };
 
 lua_Number lua_tonumber(lua_State *L, int idx);
@@ -663,6 +708,8 @@ const char *luaL_checklstring(lua_State *L, int numArg, size_t *l);
 
 lua_Integer luaL_checkinteger(lua_State *L, int numArg);
 
+lua_State *luaL_newState(void);
+
 int luaL_getmetafield(lua_State *L, int obj, const char *event);
 
 void *luaL_checkudata(lua_State *L, int ud, const char *tname);
@@ -733,7 +780,6 @@ void luaL_addvalue(luaL_Buffer *B);
 
 #define luaL_getn(L, i)((int)lua_objlen(L,i))
 #define luaL_setn(L, i, j)((void)0)
-
 
 TValue *index2adr(lua_State *L, int idx);
 

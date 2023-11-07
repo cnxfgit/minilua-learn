@@ -1,14 +1,11 @@
 #include "minilua.h"
 
-
-static void *luaM_realloc_(lua_State *L, void *block, size_t oldsize,
-                           size_t size);
+static void *luaM_realloc_(lua_State *L, void *block, size_t oldsize, size_t size);
 
 static void *luaM_toobig(lua_State *L);
 
 static void *luaM_growaux_(lua_State *L, void *block, int *size,
-                           size_t size_elem, int limit,
-                           const char *errormsg);
+                           size_t size_elem, int limit, const char *errormsg);
 
 #define rawgco2ts(o)check_exp((o)->gch.tt==4,&((o)->ts))
 #define gco2ts(o)(&rawgco2ts(o)->tsv)
@@ -77,7 +74,7 @@ static void *luaM_toobig(lua_State *L) {
 
 static void *luaM_realloc_(lua_State *L, void *block, size_t osize, size_t nsize) {
     global_State *g = G(L);
-    block = (*g->frealloc)(g->ud, block, osize, nsize);
+    block = (*g->frealloc)(g->userdata, block, osize, nsize);
     if (block == NULL && nsize > 0)
         luaD_throw(L, 4);
     g->totalbytes = (g->totalbytes - osize) + nsize;
@@ -552,13 +549,15 @@ typedef struct FuncState {
     unsigned short actvar[200];
 } FuncState;
 
-static Proto *luaY_parser(lua_State *L, ZIO *z, Mbuffer *buff,
-                          const char *name);
+static Proto *luaY_parser(lua_State *L, ZIO *z, MBuffer *buff, const char *name);
 
+// 在上下文中，volatile int status; 的使用可能是因为 status 变量会在长跳转的处理过程中被修改，
+// 而且这种修改是由程序执行流之外的因素所导致的，比如在异常处理时。
+// 因此，为了确保编译器不会对 status 变量的读写进行优化，需要使用 volatile 关键字来标记这个变量。
 struct lua_longjmp {
-    struct lua_longjmp *previous;
-    jmp_buf b;
-    volatile int status;
+    struct lua_longjmp *previous;   // 指向上一个 lua_longjmp 结构体的指针，用于构成一个链表结构，以记录长跳转的调用链
+    jmp_buf b;                      // 类型的变量，用于保存当前的程序执行状态，包括寄存器、栈指针等信息，以便在发生长跳转时能够正确地恢复
+    volatile int status;            // 用于表示长跳转的状态，通常用于指示长跳转是正常返回还是出现异常情况
 };
 
 static void luaD_seterrorobj(lua_State *L, int errcode, StkId oldtop) {
@@ -791,8 +790,7 @@ static void luaD_call(lua_State *L, StkId func, int nResults) {
     luaC_checkGC(L);
 }
 
-static int luaD_pcall(lua_State *L, Pfunc func, void *u,
-                      ptrdiff_t old_top, ptrdiff_t ef) {
+static int luaD_pcall(lua_State *L, Pfunc func, void *u, ptrdiff_t old_top, ptrdiff_t ef) {
     int status;
     unsigned short oldnCcalls = L->nCcalls;
     ptrdiff_t old_ci = saveci(L, L->ci);
@@ -817,7 +815,7 @@ static int luaD_pcall(lua_State *L, Pfunc func, void *u,
 
 struct SParser {
     ZIO *z;
-    Mbuffer buff;
+    MBuffer buff;
     const char *name;
 };
 
@@ -850,7 +848,7 @@ static int luaD_protectedparser(lua_State *L, ZIO *z, const char *name) {
 
 static void luaS_resize(lua_State *L, int newsize) {
     GCObject **newhash;
-    stringtable *tb;
+    StringTable *tb;
     int i;
     if (G(L)->gcstate == 2)
         return;
@@ -876,7 +874,7 @@ static void luaS_resize(lua_State *L, int newsize) {
 static TString *newlstr(lua_State *L, const char *str, size_t l,
                         unsigned int h) {
     TString *ts;
-    stringtable *tb;
+    StringTable *tb;
     if (l + 1 > (((size_t) (~(size_t) 0) - 2) - sizeof(TString)) / sizeof(char))
         luaM_toobig(L);
     ts = cast(TString*, luaM_malloc(L, (l + 1) * sizeof(char) + sizeof(TString)));
@@ -1894,7 +1892,7 @@ typedef struct LexState {
     struct FuncState *fs;
     struct lua_State *L;
     ZIO *z;
-    Mbuffer *buff;
+    MBuffer *buff;
     TString *source;
     char decpoint;
 } LexState;
@@ -1903,9 +1901,11 @@ static void luaX_init(lua_State *L);
 
 static void luaX_lexerror(LexState *ls, const char *msg, int token);
 
-#define state_size(x)(sizeof(x)+0)
 #define fromstate(l)(cast(lu_byte*,(l))-0)
 #define tostate(l)(cast(lua_State*,cast(lu_byte*,l)+0))
+
+// 通过将 lua_State 和 global_State 结合在一起，结构体 LG 可以用来表示一个完
+// 整的 Lua 虚拟机实例的状态，包括了虚拟机的运行时状态和全局状态信息。
 typedef struct LG {
     lua_State l;
     global_State g;
@@ -1944,7 +1944,7 @@ static void f_luaopen(lua_State *L, void *ud) {
     g->GCthreshold = 4 * g->totalbytes;
 }
 
-static void preinit_state(lua_State *L, global_State *g) {
+static void preInitState(lua_State *L, global_State *g) {
     G(L) = g;
     L->stack = NULL;
     L->stacksize = 0;
@@ -1971,31 +1971,36 @@ static void close_state(lua_State *L) {
     luaM_freearray(L, G(L)->strt.hash, G(L)->strt.size, TString*);
     luaZ_freebuffer(L, &g->buff);
     freestack(L, L);
-    (*g->frealloc)(g->ud, fromstate(L), state_size(LG), 0);
+    (*g->frealloc)(g->userdata, fromstate(L), sizeof(LG), 0);
 }
 
 static void luaE_freethread(lua_State *L, lua_State *L1) {
     luaF_close(L1, L1->stack);
     freestack(L, L1);
-    luaM_freemem(L, fromstate(L1), state_size(lua_State));
+    luaM_freemem(L, fromstate(L1), sizeof(lua_State));
 }
 
-static lua_State *lua_newstate(lua_Alloc f, void *ud) {
+static lua_State *lua_newState(lua_Alloc f, void *userdata) {
     int i;
     lua_State *L;
     global_State *g;
-    void *l = (*f)(ud, NULL, 0, state_size(LG));
-    if (l == NULL)return NULL;
+    // lua_State 和 global_State 一起分配
+    void *l = (*f)(userdata, NULL, 0, sizeof(LG));
+    if (l == NULL) return NULL;
     L = tostate(l);
     g = &((LG *) L)->g;
+
     L->next = NULL;
-    L->tt = 8;
+    L->tt = LUA_TTHREAD;
+    // (00100001) 33
     g->currentwhite = bit2mask(0, 5);
+    // (00100001 & 00000011) 1
     L->marked = luaC_white(g);
+    // (01100001) 97
     set2bits(L->marked, 5, 6);
-    preinit_state(L, g);
+    preInitState(L, g);
     g->frealloc = f;
-    g->ud = ud;
+    g->userdata = userdata;
     g->mainthread = L;
     g->uvhead.u.l.prev = &g->uvhead;
     g->uvhead.u.l.next = &g->uvhead;
@@ -2022,7 +2027,7 @@ static lua_State *lua_newstate(lua_Alloc f, void *ud) {
     if (luaD_rawrunprotected(L, f_luaopen, NULL) != 0) {
         close_state(L);
         L = NULL;
-    } else {}
+    }
     return L;
 }
 
@@ -2287,7 +2292,7 @@ static void luaZ_init(lua_State *L, ZIO *z, lua_Reader reader, void *data) {
     z->p = NULL;
 }
 
-static char *luaZ_openspace(lua_State *L, Mbuffer *buff, size_t n) {
+static char *luaZ_openspace(lua_State *L, MBuffer *buff, size_t n) {
     if (n > buff->buffsize) {
         if (n < 32)n = 32;
         luaZ_resizebuffer(L, buff, n);
@@ -2325,7 +2330,7 @@ static const char *const luaX_tokens[] = {
 #define save_and_next(ls)(save(ls,ls->current),next(ls))
 
 static void save(LexState *ls, int c) {
-    Mbuffer *b = ls->buff;
+    MBuffer *b = ls->buff;
     if (b->n + 1 > b->buffsize) {
         size_t newsize;
         if (b->buffsize >= ((size_t) (~(size_t) 0) - 2) / 2)
@@ -3758,7 +3763,7 @@ static void close_func(LexState *ls) {
     L->top -= 2;
 }
 
-static Proto *luaY_parser(lua_State *L, ZIO *z, Mbuffer *buff, const char *name) {
+static Proto *luaY_parser(lua_State *L, ZIO *z, MBuffer *buff, const char *name) {
     struct LexState lexstate;
     struct FuncState funcstate;
     lexstate.buff = buff;
@@ -5777,8 +5782,7 @@ int lua_pcall(lua_State *L, int nargs, int nresults, int errfunc) {
     return status;
 }
 
-static int lua_load(lua_State *L, lua_Reader reader, void *data,
-                    const char *chunkname) {
+static int lua_load(lua_State *L, lua_Reader reader, void *data, const char *chunkname) {
     ZIO z;
     int status;
     if (!chunkname)chunkname = "?";
@@ -5950,8 +5954,7 @@ lua_Integer luaL_checkinteger(lua_State *L, int narg) {
     return d;
 }
 
-lua_Integer luaL_optinteger(lua_State *L, int narg,
-                            lua_Integer def) {
+lua_Integer luaL_optinteger(lua_State *L, int narg, lua_Integer def) {
     return luaL_opt(L, luaL_checkinteger, narg, def);
 }
 
@@ -5979,8 +5982,7 @@ static int libsize(const luaL_Reg *l) {
     return size;
 }
 
-static void luaI_openlib(lua_State *L, const char *libname,
-                         const luaL_Reg *l, int nup) {
+static void luaI_openlib(lua_State *L, const char *libname, const luaL_Reg *l, int nup) {
     if (libname) {
         int size = libsize(l);
         luaL_findtable(L, (-10000), "_LOADED", 1);
@@ -6005,8 +6007,7 @@ static void luaI_openlib(lua_State *L, const char *libname,
     lua_pop(L, nup);
 }
 
-static const char *luaL_findtable(lua_State *L, int idx,
-                                  const char *fname, int szhint) {
+static const char *luaL_findtable(lua_State *L, int idx, const char *fname, int szhint) {
     const char *e;
     lua_pushvalue(L, idx);
     do {
@@ -6186,14 +6187,16 @@ int luaL_loadbuffer(lua_State *L, const char *buff, size_t size, const char *nam
     return lua_load(L, getS, &ls, name);
 }
 
-static void *l_alloc(void *ud, void *ptr, size_t osize, size_t nsize) {
+static void *l_alloc(void *ud, void *ptr, size_t oldSize, size_t newSize) {
+    //(void) ud; 和 (void) oldSize;
+    // 这两行代码是在函数中明确告诉编译器，我们不打算使用参数 ud 和 oldSize，这样可以避免出现未使用参数的警告
     (void) ud;
-    (void) osize;
-    if (nsize == 0) {
+    (void) oldSize;
+    if (newSize == 0) {
         free(ptr);
         return NULL;
-    } else
-        return realloc(ptr, nsize);
+    }
+    return realloc(ptr, newSize);
 }
 
 static int panic(lua_State *L) {
@@ -6203,17 +6206,17 @@ static int panic(lua_State *L) {
     return 0;
 }
 
-static lua_State *luaL_newstate(void) {
-    lua_State *L = lua_newstate(l_alloc, NULL);
+lua_State *luaL_newState(void) {
+    lua_State *L = lua_newState(l_alloc, NULL);
     if (L)lua_atpanic(L, &panic);
     return L;
 }
 
-extern const luaL_Reg bitlib[];
-extern const luaL_Reg lualibs[];
+extern const luaL_Reg bitLib[];
+extern const luaL_Reg luaLibs[];
 
 static void luaL_openlibs(lua_State *L) {
-    const luaL_Reg *lib = lualibs;
+    const luaL_Reg *lib = luaLibs;
     for (; lib->func; lib++) {
         lua_pushcfunction(L, lib->func);
         lua_pushstring(L, lib->name);
@@ -6222,10 +6225,10 @@ static void luaL_openlibs(lua_State *L) {
 }
 
 int main(int argc, char **argv) {
-    lua_State *L = luaL_newstate();
+    lua_State *L = luaL_newState();
     int i;
     luaL_openlibs(L);
-    luaL_register(L, "bit", bitlib);
+    luaL_register(L, "bit", bitLib);
     if (argc < 2)return sizeof(void *);
     lua_createtable(L, 0, 1);
     lua_pushstring(L, argv[1]);

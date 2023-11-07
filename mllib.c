@@ -94,7 +94,7 @@ static int tohex(lua_State *L) {
     return 1;
 }
 
-const luaL_Reg bitlib[] = {
+const luaL_Reg bitLib[] = {
         {"tobit",   tobit},
         {"bnot",    bnot},
         {"band",    band},
@@ -1727,7 +1727,7 @@ static int luaopen_string(lua_State *L) {
     return 1;
 }
 
-const luaL_Reg lualibs[] = {
+const luaL_Reg luaLibs[] = {
         {"",       luaopen_base},
         {"table",  luaopen_table},
         {"io",     luaopen_io},
