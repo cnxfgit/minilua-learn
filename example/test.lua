@@ -30,6 +30,11 @@ local function print(...)
     io.write("\n") -- 输出换行符
 end
 
+-- 打印版本
+print("======== _VERSION ==========")
+print("Version:", _VERSION)
+print("======== _VERSION ==========\n")
+
 -- 打印全局变量
 print("======== _G ==========")
 for i, _ in pairs(_G) do
@@ -69,3 +74,4 @@ print(c2())
 print(c2())
 print(c2())
 print("======== counter ==========\n")
+

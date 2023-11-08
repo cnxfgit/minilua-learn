@@ -45,8 +45,6 @@ typedef unsigned __int64 U64;
 typedef unsigned long long U64;
 #endif
 
-#define LUA_TNONE           (-1)
-
 #define LUA_TNIL            0
 #define LUA_TBOOLEAN        1
 #define LUA_TLIGHTUSERDATA  2
@@ -57,7 +55,13 @@ typedef unsigned long long U64;
 #define LUA_TUSERDATA       7
 #define LUA_TTHREAD         8
 
-#define LUA_NUMTYPES        9
+
+// Possible states of the Garbage Collector
+#define GCS_PAUSE	    0   // 表示垃圾回收器处于暂停状态
+#define GCS_PROPAGATE	1   // 表示垃圾回收器正在遍历对象并标记可达对象
+#define GCS_SWEEPSTRING	2   // 表示垃圾回收器正在清理字符串对象
+#define GCS_SWEEP	    3   // 表示垃圾回收器正在进行清理操作
+#define GCS_FINALIZE	4   // 表示垃圾回收器正在执行对象的终结操作
 
 typedef enum {
     TM_INDEX,       // 当表中的一个键在表中不存在时，Lua 会调用这个元方法来获取该键对应的值
@@ -130,6 +134,14 @@ typedef enum {
     OP_VARARG       // 用于获取可变数量的参数
 } OpCode;
 
+/*
+** masks for instruction properties. The format is:
+** bits 0-1: op mode
+** bits 2-3: C arg mode
+** bits 4-5: B arg mode
+** bit 6: instruction set register A
+** bit 7: operator is a test
+*/
 enum OpArgMask {
     OpArgN,     // 表示没有附加参数（None），指令不需要额外的操作数
     OpArgU,     // 表示一个未使用的参数（Unused），指令可能有一个未使用的参数
@@ -283,16 +295,17 @@ typedef struct lua_TValue {
     int tt;         // 它被用来标识值的类型（type tag）
 } TValue;
 
-#define ttisnil(o)(ttype(o)==0)
-#define ttisnumber(o)(ttype(o)==3)
-#define ttisstring(o)(ttype(o)==4)
-#define ttistable(o)(ttype(o)==5)
-#define ttisfunction(o)(ttype(o)==6)
-#define ttisboolean(o)(ttype(o)==1)
-#define ttisuserdata(o)(ttype(o)==7)
-#define ttisthread(o)(ttype(o)==8)
-#define ttislightuserdata(o)(ttype(o)==2)
 #define ttype(o)((o)->tt)
+#define ttisnil(o)(ttype(o)==LUA_TNIL)
+#define ttisnumber(o)(ttype(o)==LUA_TNUMBER)
+#define ttisstring(o)(ttype(o)==LUA_TSTRING)
+#define ttistable(o)(ttype(o)==LUA_TTABLE)
+#define ttisfunction(o)(ttype(o)==LUA_TFUNCTION)
+#define ttisboolean(o)(ttype(o)==LUA_TBOOLEAN)
+#define ttisuserdata(o)(ttype(o)==LUA_TUSERDATA)
+#define ttisthread(o)(ttype(o)==LUA_TTHREAD)
+#define ttislightuserdata(o)(ttype(o)==LUA_TLIGHTUSERDATA)
+
 #define gcvalue(o)check_exp(iscollectable(o),(o)->value.gc)
 #define pvalue(o)check_exp(ttislightuserdata(o),(o)->value.p)
 #define nvalue(o)check_exp(ttisnumber(o),(o)->value.n)
@@ -314,6 +327,7 @@ typedef struct lua_TValue {
 #define setuvalue(L, obj, x){TValue*i_o=(obj);i_o->value.gc=cast(GCObject*,(x));i_o->tt=7;checkliveness(G(L),i_o);}
 #define setthvalue(L, obj, x){TValue*i_o=(obj);i_o->value.gc=cast(GCObject*,(x));i_o->tt=8;checkliveness(G(L),i_o);}
 #define setclvalue(L, obj, x){TValue*i_o=(obj);i_o->value.gc=cast(GCObject*,(x));i_o->tt=6;checkliveness(G(L),i_o);}
+// 用于将新创建的表设置为Lua栈顶的值
 #define sethvalue(L, obj, x){TValue*i_o=(obj);i_o->value.gc=cast(GCObject*,(x));i_o->tt=5;checkliveness(G(L),i_o);}
 #define setptvalue(L, obj, x){TValue*i_o=(obj);i_o->value.gc=cast(GCObject*,(x));i_o->tt=(8+1);checkliveness(G(L),i_o);}
 #define setobj(L, obj1, obj2){const TValue*o2=(obj2);TValue*o1=(obj1);o1->value=o2->value;o1->tt=o2->tt;checkliveness(G(L),o1);}
@@ -509,8 +523,7 @@ struct Zio {
 static int luaZ_fill(ZIO *z);
 
 struct lua_longjmp;
-#define gt(L)(&L->l_gt)
-#define registry(L)(&G(L)->l_registry)
+
 
 typedef struct {
     GCObject **hash;    // 用于存储指向字符串对象的指针，这里使用指针数组的方式来实现哈希表，以便快速查找和管理字符串对象
@@ -660,7 +673,7 @@ int lua_rawequal(lua_State *L, int index1, int index2);
 
 void lua_replace(lua_State *L, int idx);
 
-void lua_createtable(lua_State *L, int narr, int nrec);
+void lua_createTable(lua_State *L, int nArr, int nRec);
 
 int lua_next(lua_State *L, int idx);
 
@@ -708,7 +721,7 @@ const char *luaL_checklstring(lua_State *L, int numArg, size_t *l);
 
 lua_Integer luaL_checkinteger(lua_State *L, int numArg);
 
-lua_State *luaL_newState(void);
+lua_State *luaL_newState();
 
 int luaL_getmetafield(lua_State *L, int obj, const char *event);
 
@@ -759,7 +772,7 @@ void luaL_addvalue(luaL_Buffer *B);
 #define luaL_checkstring(L, n)(luaL_checklstring(L,(n),NULL))
 
 #define lua_pop(L, n)lua_settop(L,-(n)-1)
-#define lua_newtable(L)lua_createtable(L,0,0)
+#define lua_newtable(L)lua_createTable(L,0,0)
 #define lua_pushcfunction(L, f)lua_pushcclosure(L,(f),0)
 #define lua_strlen(L, i)lua_objlen(L,(i))
 #define lua_isfunction(L, n)(lua_type(L,(n))==6)

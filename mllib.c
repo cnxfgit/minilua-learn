@@ -1449,11 +1449,11 @@ static void base_open(lua_State *L) {
     lua_pushvalue(L, (-10002));
     lua_setglobal(L, "_G");
     luaL_register(L, "_G", base_funcs);
-    lua_pushliteral(L, "Lua 5.1");
+    lua_pushliteral(L, "Lua mini");
     lua_setglobal(L, "_VERSION");
     auxopen(L, "ipairs", luaB_ipairs, ipairsaux);
     auxopen(L, "pairs", luaB_pairs, luaB_next);
-    lua_createtable(L, 0, 1);
+    lua_createTable(L, 0, 1);
     lua_pushvalue(L, -1);
     lua_setmetatable(L, -2);
     lua_pushliteral(L, "kv");
@@ -1652,7 +1652,7 @@ static void createmeta(lua_State *L) {
 }
 
 static void newfenv(lua_State *L, lua_CFunction cls) {
-    lua_createtable(L, 0, 1);
+    lua_createTable(L, 0, 1);
     lua_pushcfunction(L, cls);
     lua_setfield(L, -2, "__close");
 }
@@ -1711,7 +1711,7 @@ static int luaopen_os(lua_State *L) {
 }
 
 static void createmetatable(lua_State *L) {
-    lua_createtable(L, 0, 1);
+    lua_createTable(L, 0, 1);
     lua_pushliteral(L, "");
     lua_pushvalue(L, -2);
     lua_setmetatable(L, -2);
