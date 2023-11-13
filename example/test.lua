@@ -1,4 +1,4 @@
--- 定义基础函数tostring
+-- �����������tostring
 local function tostring(value)
     --local mt = getmetatable(value)
     --if mt and mt.__tostring then
@@ -17,25 +17,25 @@ local function tostring(value)
     end
 end
 
--- 定义基础函数print
+-- �����������print
 local function print(...)
-    local args = { ... } -- 将传入的参数保存到一个表中
+    local args = { ... } -- ������Ĳ������浽һ������
     for i, v in ipairs(args) do
-        io.write(tostring(v)) -- 将参数转换为字符串并输出
+        io.write(tostring(v)) -- ������ת��Ϊ�ַ��������
         if i < #args then
-            io.write("\t") -- 在参数之间添加制表符分隔
+            io.write("\t") -- �ڲ���֮������Ʊ���ָ�
         end
     end
 
-    io.write("\n") -- 输出换行符
+    io.write("\n") -- ������з�
 end
 
--- 打印版本
+-- ��ӡ�汾
 print("======== _VERSION ==========")
 print("Version:", _VERSION)
 print("======== _VERSION ==========\n")
 
--- 打印全局变量
+-- ��ӡȫ�ֱ���
 print("======== _G ==========")
 for i, _ in pairs(_G) do
     print(i)

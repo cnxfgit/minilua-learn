@@ -29,21 +29,21 @@
 * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ******************************************************************************/
+
 #include <stddef.h>
-#include <stdarg.h>
-#include <limits.h>
-#include <math.h>
-#include <ctype.h>
 #include <stdio.h>
+#include <ctype.h>
 #include <stdlib.h>
 #include <string.h>
-#include <setjmp.h>
+#include <stdbool.h>
 
 #ifdef _MSC_VER
 typedef unsigned __int64 U64;
 #else
 typedef unsigned long long U64;
 #endif
+
+#define LUA_TNONE           (-1)
 
 #define LUA_TNIL            0
 #define LUA_TBOOLEAN        1
@@ -57,11 +57,17 @@ typedef unsigned long long U64;
 
 
 // Possible states of the Garbage Collector
-#define GCS_PAUSE	    0   // 表示垃圾回收器处于暂停状态
-#define GCS_PROPAGATE	1   // 表示垃圾回收器正在遍历对象并标记可达对象
-#define GCS_SWEEPSTRING	2   // 表示垃圾回收器正在清理字符串对象
-#define GCS_SWEEP	    3   // 表示垃圾回收器正在进行清理操作
-#define GCS_FINALIZE	4   // 表示垃圾回收器正在执行对象的终结操作
+#define GCS_PAUSE        0   // 表示垃圾回收器处于暂停状态
+#define GCS_PROPAGATE    1   // 表示垃圾回收器正在遍历对象并标记可达对象
+#define GCS_SWEEPSTRING    2   // 表示垃圾回收器正在清理字符串对象
+#define GCS_SWEEP        3   // 表示垃圾回收器正在进行清理操作
+#define GCS_FINALIZE    4   // 表示垃圾回收器正在执行对象的终结操作
+
+// pseudo-indices
+#define LUA_REGISTRY_INDEX        (-10000)                // 表示 Lua 注册表的索引
+#define LUA_ENVIRON_INDEX        (-10001)                // 表示环境表的索引
+#define LUA_GLOBALS_INDEX        (-10002)                // 表示全局环境的索引
+#define LUA_UPVALUE_INDEX(i)    (LUA_GLOBALS_INDEX-(i))  // 计算上值的索引
 
 typedef enum {
     TM_INDEX,       // 当表中的一个键在表中不存在时，Lua 会调用这个元方法来获取该键对应的值
@@ -214,27 +220,21 @@ typedef enum UnOpr {
 #define lua_pclose(L, file)((void)((void)L,file),0)
 #define lua_upvalueindex(i)((-10002)-(i))
 
-typedef struct lua_Debug {
-    int event;
-    const char *name;
-    const char *namewhat;
-    const char *what;
-    const char *source;
-    int currentline;
-    int nups;
-    int linedefined;
-    int lastlinedefined;
-    char short_src[60];
-    int i_ci;
-} lua_Debug;
+
 
 typedef struct lua_State lua_State;
+
 typedef int(*lua_CFunction)(lua_State *L);
+
 typedef double lua_Number;
 typedef ptrdiff_t lua_Integer;
+
 typedef const char *(*lua_Reader)(lua_State *L, void *ud, size_t *sz);
+
 typedef void *(*lua_Alloc)(void *userdata, void *ptr, size_t oldSize, size_t newSize);
-typedef void(*lua_Hook)(lua_State *L, lua_Debug *ar);
+
+
+
 typedef unsigned int lu_int32;
 typedef size_t lu_mem;
 typedef ptrdiff_t l_mem;
@@ -466,15 +466,9 @@ typedef struct Table {
     int sizearray;              // 表示数组部分的大小
 } Table;
 
-#define lmod(s, size)(check_exp((size&(size-1))==0,(cast(int,(s)&((size)-1)))))
+
 #define twoto(x)((size_t)1<<(x))
 #define sizenode(t)(twoto((t)->lsizenode))
-
-static const TValue luaO_nilobject_;
-
-#define ceillog2(x)(luaO_log2((x)-1)+1)
-
-static int luaO_log2(unsigned int x);
 
 #define gfasttm(g, et, e)((et)==NULL?NULL:((et)->flags&(1u<<(e)))?NULL:luaT_gettm(et,e,(g)->tmname[e]))
 #define fasttm(l, et, e)gfasttm(G(l),et,e)
@@ -524,10 +518,9 @@ static int luaZ_fill(ZIO *z);
 
 struct lua_longjmp;
 
-
 typedef struct {
     GCObject **hash;    // 用于存储指向字符串对象的指针，这里使用指针数组的方式来实现哈希表，以便快速查找和管理字符串对象
-    lu_int32 nuse;      // 表示当前使用的字符串对象数量
+    lu_int32 nUse;      // 表示当前使用的字符串对象数量
     int size;           // 表示哈希表的大小，即能容纳的字符串对象的数量
 } StringTable;
 
@@ -573,169 +566,181 @@ typedef struct global_State {
     TString *tmname[TM_N];              // 用于存储元方法名称的数组
 } global_State;
 
-struct lua_State {
-    GCObject *next;                     // 指向下一个 GCObject 结构的指针，用于在 Lua 的垃圾回收器中组织对象
-    lu_byte tt;                         // 表示 Lua 对象的类型标记，用于判断该对象的具体类型，例如是表、函数还是其他类型的对象
-    lu_byte marked;                     // 用于标记对象是否被垃圾回收器标记为可回收对象
-    lu_byte status;                     // 表示 Lua 状态机的状态，例如是运行中还是挂起等
-    StkId top;                          // 指向当前栈顶的指针，用于操作 Lua 栈中的元素
-    StkId base;                         // 指向当前栈底的指针，用于操作 Lua 栈中的元素
-    global_State *l_G;                  // 指向 Lua 全局状态的指针，其中包含了 Lua 中全局的状态信息
-    CallInfo *ci;                       // 指向当前调用信息结构的指针，用于管理 Lua 函数调用的相关信息
-    const Instruction *savedpc;         // 指向保存的指令的指针，用于在执行 Lua 函数时保存当前执行的指令位置
-    StkId stack_last;                   // 指向栈中最后一个元素的指针，用于辅助管理 Lua 栈的扩展和缩减
-    StkId stack;                        // 指向 Lua 栈的起始地址，用于操作 Lua 栈中的元素
-    CallInfo *end_ci;                   // 指向调用链表的尾部，用于管理函数调用的链表结构
-    CallInfo *base_ci;                  // 指向调用链表的头部，用于管理函数调用的链表结构
-    int stacksize;                      // 表示当前 Lua 栈的大小，即能容纳元素的数量
-    int size_ci;                        // 表示当前调用链表中的 CallInfo 结构的数量
-    unsigned short nCcalls;             // 表示当前 C 函数调用的数量
-    unsigned short baseCcalls;          // 表示基本的 C 函数调用数量
-    lu_byte hookmask;                   // 表示钩子函数的掩码，用于控制钩子函数的行为
-    lu_byte allowhook;                  // 表示是否允许调用钩子函数
-    int basehookcount;                  // 基本的钩子计数
-    int hookcount;                      // 钩子计数
-    lua_Hook hook;                      // 指向钩子函数的指针，用于设置 Lua 的钩子函数
-    TValue l_gt;                        // 全局表（_G）对应的 TValue 结构
-    TValue env;                         // 表示当前环境对应的 TValue 结构
-    GCObject *openupval;                // 指向打开的 Upvalue 对象的指针，用于管理 Upvalue 对象的生命周期
-    GCObject *gclist;                   // 用于管理对象的垃圾回收链表
-    struct lua_longjmp *errorJmp;       // 指向错误跳转结构的指针，用于处理错误跳转
-    ptrdiff_t errfunc;                  // 表示当前错误处理函数在栈中的位置
-};
+
 
 #define G(L) (L->l_G)
 
-union GCObject {
-    GCheader gch;           // 表示垃圾回收对象的头部信息，包括对象的类型标记、引用计数等元数据
-    union TString ts;       // 联合体中包含了对字符串对象的定义
-    union Udata u;          // 包含用户自定义数据（userdata）
-    union Closure cl;       // 这个联合体包含了对闭包（函数）对象的定义
-    struct Table h;         // 用于表示表对象
-    struct Proto p;         // 用于表示函数原型
-    struct UpVal uv;        // 用于表示 Upvalue（上值）对象
-    struct lua_State th;    // 用于表示 Lua 状态机
-};
 
-lua_Number lua_tonumber(lua_State *L, int idx);
 
-int lua_toboolean(lua_State *L, int idx);
+// state manipulation
+lua_State *lua_newState(lua_Alloc f, void *userdata);
 
-void *lua_touserdata(lua_State *L, int idx);
+void lua_close(lua_State *L);
 
-lua_Integer lua_tointeger(lua_State *L, int idx);
+lua_CFunction lua_atPanic(lua_State *L, lua_CFunction panicFunc);
 
-const char *lua_tolstring(lua_State *L, int idx, size_t *len);
 
-lua_CFunction lua_tocfunction(lua_State *L, int idx);
+// basic stack manipulation
+int lua_getTop(lua_State *L);
+
+void lua_setTop(lua_State *L, int idx);
+
+void lua_pushValue(lua_State *L, int idx);
+
+void lua_remove(lua_State *L, int idx);
+
+void lua_insert(lua_State *L, int idx);
+
+void lua_replace(lua_State *L, int idx);
+
+int lua_checkStack(lua_State *L, int size);
+
+
+// access functions (stack -> C)
 
 int lua_isnumber(lua_State *L, int idx);
 
 int lua_isstring(lua_State *L, int idx);
 
-int lua_gettop(lua_State *L);
+int lua_iscfunction(lua_State *L, int idx);
 
-int lua_getstack(lua_State *L, int level, lua_Debug *ar);
+int lua_type(lua_State *L, int idx);
 
-int lua_getinfo(lua_State *L, const char *what, lua_Debug *ar);
+const char *lua_typename(lua_State *L, int t);
+
+int lua_rawequal(lua_State *L, int index1, int index2);
+
+int lua_lessthan(lua_State *L, int index1, int index2);
+
+lua_Number lua_tonumber(lua_State *L, int idx);
+
+lua_Integer lua_tointeger(lua_State *L, int idx);
+
+int lua_toboolean(lua_State *L, int idx);
+
+const char *lua_tolstring(lua_State *L, int idx, size_t *len);
+
+size_t lua_objlen(lua_State *L, int idx);
+
+lua_CFunction lua_tocfunction(lua_State *L, int idx);
+
+void *lua_touserdata(lua_State *L, int idx);
+
+
+// push functions (C -> stack)
+void lua_pushnil(lua_State *L);
+
+void lua_pushnumber(lua_State *L, lua_Number n);
+
+void lua_pushinteger(lua_State *L, lua_Integer n);
+
+void lua_pushlstring(lua_State *L, const char *s, size_t len);
+
+void lua_pushstring(lua_State *L, const char *s);
+
+const char *lua_pushvfstring(lua_State *L, const char *fmt, va_list argp);
+
+const char *lua_pushfstring(lua_State *L, const char *fmt, ...);
+
+void lua_pushcclosure(lua_State *L, lua_CFunction fn, int n);
+
+void lua_pushboolean(lua_State *L, int b);
+
+int lua_pushthread(lua_State *L);
+
+
+// get functions (Lua -> stack)
+void lua_gettable(lua_State *L, int idx);
 
 void lua_getfield(lua_State *L, int idx, const char *k);
 
-int lua_getmetatable(lua_State *L, int objindex);
-
-void lua_gettable(lua_State *L, int idx);
-
-void lua_getfenv(lua_State *L, int idx);
+void lua_rawget(lua_State *L, int idx);
 
 void lua_rawgeti(lua_State *L, int idx, int n);
 
-void lua_settop(lua_State *L, int idx);
+void lua_createTable(lua_State *L, int nArr, int nRec);
+
+void *lua_newuserdata(lua_State *L, size_t size);
+
+int lua_getmetatable(lua_State *L, int objindex);
+
+void lua_getfenv(lua_State *L, int idx);
+
+
+// set functions (stack -> Lua)
+void lua_settable(lua_State *L, int idx);
 
 void lua_setfield(lua_State *L, int idx, const char *k);
+
+void lua_rawset(lua_State *L, int idx);
+
+void lua_rawseti(lua_State *L, int idx, int n);
 
 int lua_setmetatable(lua_State *L, int objindex);
 
 int lua_setfenv(lua_State *L, int idx);
 
-int lua_type(lua_State *L, int idx);
 
+// `load' and `call' functions (load and run Lua code)
 void lua_call(lua_State *L, int nargs, int nresults);
-
-int lua_lessthan(lua_State *L, int index1, int index2);
-
-void lua_rawseti(lua_State *L, int idx, int n);
-
-void lua_rawset(lua_State *L, int idx);
-
-void lua_rawget(lua_State *L, int idx);
-
-int lua_rawequal(lua_State *L, int index1, int index2);
-
-void lua_replace(lua_State *L, int idx);
-
-void lua_createTable(lua_State *L, int nArr, int nRec);
-
-int lua_next(lua_State *L, int idx);
 
 int lua_pcall(lua_State *L, int nargs, int nresults, int errfunc);
 
-void *lua_newuserdata(lua_State *L, size_t size);
+int lua_load(lua_State *L, lua_Reader reader, void *data, const char *chunkname);
 
-void lua_pushnil(lua_State *L);
 
-int lua_pushthread(lua_State *L);
+// miscellaneous functions
+int lua_error(lua_State *L);
 
-void lua_pushnumber(lua_State *L, lua_Number n);
-
-void lua_pushlstring(lua_State *L, const char *s, size_t len);
-
-void lua_pushinteger(lua_State *L, lua_Integer n);
-
-void lua_pushcclosure(lua_State *L, lua_CFunction fn, int n);
-
-void lua_pushvalue(lua_State *L, int idx);
-
-void lua_pushboolean(lua_State *L, int b);
-
-void lua_pushstring(lua_State *L, const char *s);
-
-const char *lua_pushfstring(lua_State *L, const char *fmt, ...);
-
-size_t lua_objlen(lua_State *L, int idx);
-
-const char *lua_typename(lua_State *L, int t);
+int lua_next(lua_State *L, int idx);
 
 void lua_concat(lua_State *L, int n);
 
-int lua_checkstack(lua_State *L, int size);
 
-int lua_error(lua_State *L);
+// some useful macros
+#define lua_pop(L, n) lua_setTop(L,-(n)-1)
+#define lua_newtable(L) lua_createTable(L,0,0)
+#define lua_pushcfunction(L, f) lua_pushcclosure(L,(f),0)
+#define lua_strlen(L, i) lua_objlen(L,(i))
+#define lua_isfunction(L, n) (lua_type(L,(n))==LUA_TFUNCTION)
+#define lua_istable(L, n) (lua_type(L,(n))==LUA_TTABLE)
+#define lua_isnil(L, n) (lua_type(L,(n))==LUA_TNIL)
+#define lua_isboolean(L, n) (lua_type(L,(n))==LUA_TBOOLEAN)
+#define lua_isnone(L, n) (lua_type(L,(n))==LUA_TNONE)
+#define lua_isnoneornil(L, n) (lua_type(L,(n))<=0)
 
-void lua_insert(lua_State *L, int idx);
+#define lua_pushliteral(L, s) lua_pushlstring(L,""s,(sizeof(s)/sizeof(char))-1)
+#define lua_setglobal(L, s) lua_setfield(L,LUA_GLOBALS_INDEX,(s))
+#define lua_tostring(L, i) lua_tolstring(L,(i),NULL)
 
-lua_Number luaL_checknumber(lua_State *L, int narg);
 
-const char *luaL_optlstring(lua_State *L, int numArg, const char *def, size_t *l);
+// Debug API
+typedef struct lua_Debug {
+    int event;
+    const char *name;
+    const char *namewhat;
+    const char *what;
+    const char *source;
+    int currentline;
+    int nups;
+    int linedefined;
+    int lastlinedefined;
+    char short_src[60];
+    int i_ci;
+} lua_Debug;
 
-const char *luaL_checklstring(lua_State *L, int numArg, size_t *l);
+typedef void(*lua_Hook)(lua_State *L, lua_Debug *ar);
 
-lua_Integer luaL_checkinteger(lua_State *L, int numArg);
+int lua_getstack(lua_State *L, int level, lua_Debug *ar);
 
-lua_State *luaL_newState();
+int lua_getinfo(lua_State *L, const char *what, lua_Debug *ar);
 
-int luaL_getmetafield(lua_State *L, int obj, const char *event);
 
-void *luaL_checkudata(lua_State *L, int ud, const char *tname);
 
-void luaL_checkany(lua_State *L, int narg);
-
-void luaL_register(lua_State *L, const char *libname, const luaL_Reg *l);
 
 int luaL_typerror(lua_State *L, int narg, const char *tname);
 
 void luaL_buffinit(lua_State *L, luaL_Buffer *B);
-
-lua_Integer luaL_optinteger(lua_State *L, int nArg, lua_Integer def);
 
 char *luaL_prepbuffer(luaL_Buffer *B);
 
@@ -761,9 +766,6 @@ int luaL_newmetatable(lua_State *L, const char *tname);
 
 void luaL_addvalue(luaL_Buffer *B);
 
-#define lua_tostring(L, i)lua_tolstring(L,(i),NULL)
-#define lua_isnone(L, n)(lua_type(L,(n))==(-1))
-#define lua_pushliteral(L, s)lua_pushlstring(L,""s,(sizeof(s)/sizeof(char))-1)
 
 #define luaL_addchar(B, c)((void)((B)->p<((B)->buffer+BUFSIZ)||luaL_prepbuffer(B)),(*(B)->p++=(char)(c)))
 #define luaL_addsize(B, n)((B)->p+=(n))
@@ -771,18 +773,6 @@ void luaL_addvalue(luaL_Buffer *B);
 #define luaL_argcheck(L, cond, numarg, extramsg)((void)((cond)||luaL_argerror(L,(numarg),(extramsg))))
 #define luaL_checkstring(L, n)(luaL_checklstring(L,(n),NULL))
 
-#define lua_pop(L, n)lua_settop(L,-(n)-1)
-#define lua_newtable(L)lua_createTable(L,0,0)
-#define lua_pushcfunction(L, f)lua_pushcclosure(L,(f),0)
-#define lua_strlen(L, i)lua_objlen(L,(i))
-#define lua_isfunction(L, n)(lua_type(L,(n))==6)
-#define lua_istable(L, n)(lua_type(L,(n))==5)
-#define lua_isnil(L, n)(lua_type(L,(n))==0)
-#define lua_isboolean(L, n)(lua_type(L,(n))==1)
-
-#define lua_isnoneornil(L, n)(lua_type(L,(n))<=0)
-
-#define lua_setglobal(L, s)lua_setfield(L,(-10002),(s))
 
 #define luaL_optstring(L, n, d)(luaL_optlstring(L,(n),(d),NULL))
 

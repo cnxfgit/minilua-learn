@@ -1,5 +1,10 @@
 #include "minilua.h"
 
+#include <stdarg.h>
+#include <limits.h>
+#include <math.h>
+#include <setjmp.h>
+
 static void *luaM_realloc_(lua_State *L, void *block, size_t oldsize, size_t size);
 
 static void *luaM_toobig(lua_State *L);
@@ -28,10 +33,11 @@ static void luaE_freethread(lua_State *L, lua_State *L1);
 #define getline_(f, pc)(((f)->lineinfo)?(f)->lineinfo[pc]:0)
 #define resethookcount(L)(L->hookcount=L->basehookcount)
 
-static void luaG_typeerror(lua_State *L, const TValue *o,
-                           const char *opname);
+static void luaG_typeerror(lua_State *L, const TValue *o, const char *opname);
 
 static void luaG_runerror(lua_State *L, const char *fmt, ...);
+
+#define lmod(s, size)(check_exp((size&(size-1))==0,(cast(int,(s)&((size)-1)))))
 
 #define luaD_checkstack(L, n)if((char*)L->stack_last-(char*)L->top<=(n)*(int)sizeof(TValue))luaD_growstack(L,n);else condhardstacktests(luaD_reallocstack(L,L->stacksize-5-1));
 #define incr_top(L){luaD_checkstack(L,1);L->top++;}
@@ -39,6 +45,50 @@ static void luaG_runerror(lua_State *L, const char *fmt, ...);
 #define restorestack(L, n)((TValue*)((char*)L->stack+(n)))
 #define saveci(L, p)((char*)(p)-(char*)L->base_ci)
 #define restoreci(L, n)((CallInfo*)((char*)L->base_ci+(n)))
+
+
+struct lua_State {
+    GCObject *next;                     // 指向下一个 GCObject 结构的指针，用于在 Lua 的垃圾回收器中组织对象
+    lu_byte tt;                         // 表示 Lua 对象的类型标记，用于判断该对象的具体类型，例如是表、函数还是其他类型的对象
+    lu_byte marked;                     // 用于标记对象是否被垃圾回收器标记为可回收对象
+    lu_byte status;                     // 表示 Lua 状态机的状态，例如是运行中还是挂起等
+    StkId top;                          // 指向当前栈顶的指针，用于操作 Lua 栈中的元素
+    StkId base;                         // 指向当前栈底的指针，用于操作 Lua 栈中的元素
+    global_State *l_G;                  // 指向 Lua 全局状态的指针，其中包含了 Lua 中全局的状态信息
+    CallInfo *ci;                       // 指向当前调用信息结构的指针，用于管理 Lua 函数调用的相关信息
+    const Instruction *savedpc;         // 指向保存的指令的指针，用于在执行 Lua 函数时保存当前执行的指令位置
+    StkId stack_last;                   // 指向栈中最后一个元素的指针，用于辅助管理 Lua 栈的扩展和缩减
+    StkId stack;                        // 指向 Lua 栈的起始地址，用于操作 Lua 栈中的元素
+    CallInfo *end_ci;                   // 指向调用链表的尾部，用于管理函数调用的链表结构
+    CallInfo *base_ci;                  // 指向调用链表的头部，用于管理函数调用的链表结构
+    int stacksize;                      // 表示当前 Lua 栈的大小，即能容纳元素的数量
+    int size_ci;                        // 表示当前调用链表中的 CallInfo 结构的数量
+    unsigned short nCcalls;             // 表示当前 C 函数调用的数量
+    unsigned short baseCcalls;          // 表示基本的 C 函数调用数量
+    lu_byte hookmask;                   // 表示钩子函数的掩码，用于控制钩子函数的行为
+    lu_byte allowhook;                  // 表示是否允许调用钩子函数
+    int basehookcount;                  // 基本的钩子计数
+    int hookcount;                      // 钩子计数
+    lua_Hook hook;                      // 指向钩子函数的指针，用于设置 Lua 的钩子函数
+    TValue l_gt;                        // 全局表（_G）对应的 TValue 结构
+    TValue env;                         // 表示当前环境对应的 TValue 结构
+    GCObject *openupval;                // 指向打开的 Upvalue 对象的指针，用于管理 Upvalue 对象的生命周期
+    GCObject *gclist;                   // 用于管理对象的垃圾回收链表
+    struct lua_longjmp *errorJmp;       // 指向错误跳转结构的指针，用于处理错误跳转
+    ptrdiff_t errfunc;                  // 表示当前错误处理函数在栈中的位置
+};
+
+union GCObject {
+    GCheader gch;           // 表示垃圾回收对象的头部信息，包括对象的类型标记、引用计数等元数据
+    union TString ts;       // 联合体中包含了对字符串对象的定义
+    union Udata u;          // 包含用户自定义数据（userdata）
+    union Closure cl;       // 这个联合体包含了对闭包（函数）对象的定义
+    struct Table h;         // 用于表示表对象
+    struct Proto p;         // 用于表示函数原型
+    struct UpVal uv;        // 用于表示 Upvalue（上值）对象
+    struct lua_State th;    // 用于表示 Lua 状态机
+};
+
 
 typedef void(*Pfunc)(lua_State *L, void *ud);
 
@@ -142,7 +192,7 @@ static void luaV_execute(lua_State *L, int nexeccalls);
 
 static void luaV_concat(lua_State *L, int total, int last);
 
-static const TValue luaO_nilobject_ = {{NULL}, 0};
+static const TValue luaO_nilObject_ = {{NULL}, 0};
 
 static int luaO_int2fb(unsigned int x) {
     int e = 0;
@@ -160,6 +210,7 @@ static int luaO_fb2int(int x) {
     else return ((x & 7) + 8) << (e - 1);
 }
 
+// 打表法求log2
 static int luaO_log2(unsigned int x) {
     static const lu_byte log_2[256] = {
             0, 1, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 4, 4, 4, 4, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
@@ -179,21 +230,23 @@ static int luaO_log2(unsigned int x) {
     return l + log_2[x];
 }
 
-static int luaO_rawequalObj(const TValue *t1, const TValue *t2) {
-    if (ttype(t1) != ttype(t2))return 0;
-    else
-        switch (ttype(t1)) {
-            case 0:
-                return 1;
-            case 3:
-                return luai_numeq(nvalue(t1), nvalue(t2));
-            case 1:
-                return bvalue(t1) == bvalue(t2);
-            case 2:
-                return pvalue(t1) == pvalue(t2);
-            default:
-                return gcvalue(t1) == gcvalue(t2);
-        }
+#define ceil_log2(x) (luaO_log2((x)-1)+1)
+
+// 比较对象函数
+static int luaO_rawEqualObj(const TValue *t1, const TValue *t2) {
+    if (ttype(t1) != ttype(t2)) return false;
+    switch (ttype(t1)) {
+        case LUA_TNIL:
+            return true;
+        case LUA_TNUMBER:
+            return luai_numeq(nvalue(t1), nvalue(t2));
+        case LUA_TBOOLEAN:
+            return bvalue(t1) == bvalue(t2);
+        case LUA_TLIGHTUSERDATA:
+            return pvalue(t1) == pvalue(t2);
+        default:
+            return gcvalue(t1) == gcvalue(t2);
+    }
 }
 
 static int luaO_str2d(const char *s, lua_Number *result) {
@@ -364,7 +417,7 @@ static const TValue *luaT_gettmbyobj(lua_State *L, const TValue *o, TMS event) {
         default:
             mt = G(L)->mt[ttype(o)];
     }
-    return (mt ? luaH_getstr(mt, G(L)->tmname[event]) : (&luaO_nilobject_));
+    return (mt ? luaH_getstr(mt, G(L)->tmname[event]) : (&luaO_nilObject_));
 }
 
 #define sizeCclosure(n)(cast(int,sizeof(CClosure))+cast(int,sizeof(TValue)*((n)-1)))
@@ -887,8 +940,8 @@ static TString *newlstr(lua_State *L, const char *str, size_t l,
     h = lmod(h, tb->size);
     ts->tsv.next = tb->hash[h];
     tb->hash[h] = obj2gco(ts);
-    tb->nuse++;
-    if (tb->nuse > cast(lu_int32, tb->size) && tb->size <= (INT_MAX - 2) / 2)
+    tb->nUse++;
+    if (tb->nUse > cast(lu_int32, tb->size) && tb->size <= (INT_MAX - 2) / 2)
         luaS_resize(L, tb->size * 2);
     return ts;
 }
@@ -982,7 +1035,7 @@ static int findindex(lua_State *L, Table *t, StkId key) {
     else {
         Node *n = mainposition(t, key);
         do {
-            if (luaO_rawequalObj(key2tval(n), key) ||
+            if (luaO_rawEqualObj(key2tval(n), key) ||
                 (ttype(gkey(n)) == (8 + 3) && iscollectable(key) &&
                  gcvalue(gkey(n)) == gcvalue(key))) {
                 i = cast_int(n - gnode(t, 0));
@@ -1036,7 +1089,7 @@ static int computesizes(int nums[], int *narray) {
 static int countint(const TValue *key, int *nums) {
     int k = arrayindex(key);
     if (0 < k && k <= (1 << (32 - 2))) {
-        nums[ceillog2(k)]++;
+        nums[ceil_log2(k)]++;
         return 1;
     } else
         return 0;
@@ -1095,7 +1148,7 @@ static void setNodeVector(lua_State *L, Table *t, int size) {
     if (size == 0) {
         t->node = cast(Node*, (&dummynode_));
     } else {
-        lsize = ceillog2(size);
+        lsize = ceil_log2(size);
         if (lsize > (32 - 2))
             luaG_runerror(L, "table overflow");
         size = twoto(lsize);
@@ -1223,7 +1276,7 @@ static const TValue *luaH_getnum(Table *t, int key) {
                 return gval(n);
             else n = gnext(n);
         } while (n);
-        return (&luaO_nilobject_);
+        return (&luaO_nilObject_);
     }
 }
 
@@ -1234,13 +1287,13 @@ static const TValue *luaH_getstr(Table *t, TString *key) {
             return gval(n);
         else n = gnext(n);
     } while (n);
-    return (&luaO_nilobject_);
+    return (&luaO_nilObject_);
 }
 
 static const TValue *luaH_get(Table *t, const TValue *key) {
     switch (ttype(key)) {
         case 0:
-            return (&luaO_nilobject_);
+            return (&luaO_nilObject_);
         case 4:
             return luaH_getstr(t, rawtsvalue(key));
         case 3: {
@@ -1254,11 +1307,11 @@ static const TValue *luaH_get(Table *t, const TValue *key) {
         default: {
             Node *n = mainposition(t, key);
             do {
-                if (luaO_rawequalObj(key2tval(n), key))
+                if (luaO_rawEqualObj(key2tval(n), key))
                     return gval(n);
                 else n = gnext(n);
             } while (n);
-            return (&luaO_nilobject_);
+            return (&luaO_nilObject_);
         }
     }
 }
@@ -1266,7 +1319,7 @@ static const TValue *luaH_get(Table *t, const TValue *key) {
 static TValue *luaH_set(lua_State *L, Table *t, const TValue *key) {
     const TValue *p = luaH_get(t, key);
     t->flags = 0;
-    if (p != (&luaO_nilobject_))
+    if (p != (&luaO_nilObject_))
         return cast(TValue*, p);
     else {
         if (ttisnil(key))luaG_runerror(L, "table index is nil");
@@ -1278,7 +1331,7 @@ static TValue *luaH_set(lua_State *L, Table *t, const TValue *key) {
 
 static TValue *luaH_setnum(lua_State *L, Table *t, int key) {
     const TValue *p = luaH_getnum(t, key);
-    if (p != (&luaO_nilobject_))
+    if (p != (&luaO_nilObject_))
         return cast(TValue*, p);
     else {
         TValue k;
@@ -1289,7 +1342,7 @@ static TValue *luaH_setnum(lua_State *L, Table *t, int key) {
 
 static TValue *luaH_setstr(lua_State *L, Table *t, TString *key) {
     const TValue *p = luaH_getstr(t, key);
-    if (p != (&luaO_nilobject_))
+    if (p != (&luaO_nilObject_))
         return cast(TValue*, p);
     else {
         TValue k;
@@ -1627,7 +1680,7 @@ static void freeobj(lua_State *L, GCObject *o) {
             break;
         }
         case 4: {
-            G(L)->strt.nuse--;
+            G(L)->strt.nUse--;
             luaM_freemem(L, o, sizestring(gco2ts(o)));
             break;
         }
@@ -1663,7 +1716,7 @@ static GCObject **sweeplist(lua_State *L, GCObject **p, lu_mem count) {
 
 static void checkSizes(lua_State *L) {
     global_State *g = G(L);
-    if (g->strt.nuse < cast(lu_int32, g->strt.size / 4) &&
+    if (g->strt.nUse < cast(lu_int32, g->strt.size / 4) &&
         g->strt.size > 32 * 2)
         luaS_resize(L, g->strt.size / 2);
     if (luaZ_sizebuffer(&g->buff) > 32 * 2) {
@@ -1979,7 +2032,7 @@ static void luaE_freethread(lua_State *L, lua_State *L1) {
     luaM_freemem(L, fromstate(L1), sizeof(lua_State));
 }
 
-static lua_State *lua_newState(lua_Alloc f, void *userdata) {
+lua_State *lua_newState(lua_Alloc f, void *userdata) {
     int i;
     lua_State *L;
     global_State *g;
@@ -2005,7 +2058,7 @@ static lua_State *lua_newState(lua_Alloc f, void *userdata) {
     g->uvhead.u.l.next = &g->uvhead;
     g->GCthreshold = 0;
     g->strt.size = 0;
-    g->strt.nuse = 0;
+    g->strt.nUse = 0;
     g->strt.hash = NULL;
     setnilvalue(registry(L));
     luaZ_initbuffer(L, &g->buff);
@@ -2035,7 +2088,7 @@ static void callallgcTM(lua_State *L, void *ud) {
     luaC_callGCTM(L);
 }
 
-static void lua_close(lua_State *L) {
+void lua_close(lua_State *L) {
     L = G(L)->mainthread;
     luaF_close(L, L->stack);
     luaC_separateudata(L, 1);
@@ -4724,7 +4777,7 @@ static const TValue *get_compTM(lua_State *L, Table *mt1, Table *mt2,
     if (mt1 == mt2)return tm1;
     tm2 = fasttm(L, mt2, event);
     if (tm2 == NULL)return NULL;
-    if (luaO_rawequalObj(tm1, tm2))
+    if (luaO_rawEqualObj(tm1, tm2))
         return tm1;
     return NULL;
 }
@@ -4735,7 +4788,7 @@ static int call_orderTM(lua_State *L, const TValue *p1, const TValue *p2,
     const TValue *tm2;
     if (ttisnil(tm1))return -1;
     tm2 = luaT_gettmbyobj(L, p2, event);
-    if (!luaO_rawequalObj(tm1, tm2))
+    if (!luaO_rawEqualObj(tm1, tm2))
         return -1;
     callTMres(L, L->top, tm1, p1, p2);
     return !l_isfalse(L->top);
@@ -5025,7 +5078,7 @@ static void luaV_execute(lua_State *L, int nexeccalls) {
                     }
                     default: {
                         Protect(
-                                if (!call_binTM(L, rb, (&luaO_nilobject_), ra, TM_LEN))
+                                if (!call_binTM(L, rb, (&luaO_nilObject_), ra, TM_LEN))
                                     luaG_typeerror(L, rb, "get length of");
                         )
                     }
@@ -5257,40 +5310,40 @@ static void luaV_execute(lua_State *L, int nexeccalls) {
 }
 
 #define api_checknelems(L, n)luai_apicheck(L,(n)<=(L->top-L->base))
-#define api_checkvalidindex(L, i)luai_apicheck(L,(i)!=(&luaO_nilobject_))
+#define api_checkvalidindex(L, i)luai_apicheck(L,(i)!=(&luaO_nilObject_))
 #define api_incr_top(L){luai_apicheck(L,L->top<L->ci->top);L->top++;}
 
 TValue *index2adr(lua_State *L, int idx) {
     if (idx > 0) {
         TValue *o = L->base + (idx - 1);
         luai_apicheck(L, idx <= L->ci->top - L->base);
-        if (o >= L->top)return cast(TValue*, (&luaO_nilobject_));
+        if (o >= L->top)return cast(TValue*, (&luaO_nilObject_));
         else return o;
-    } else if (idx > (-10000)) {
+    } else if (idx > LUA_REGISTRY_INDEX) {
         luai_apicheck(L, idx != 0 && -idx <= L->top - L->base);
         return L->top + idx;
     } else
         switch (idx) {
-            case (-10000):
+            case LUA_REGISTRY_INDEX:
                 return registry(L);
-            case (-10001): {
+            case LUA_ENVIRON_INDEX: {
                 Closure *func = curr_func(L);
                 sethvalue(L, &L->env, func->c.env);
                 return &L->env;
             }
-            case (-10002):
+            case LUA_GLOBALS_INDEX:
                 return gt(L);
             default: {
                 Closure *func = curr_func(L);
-                idx = (-10002) - idx;
+                idx = LUA_UPVALUE_INDEX(idx);
                 return (idx <= func->c.nupvalues)
                        ? &func->c.upvalue[idx - 1]
-                       : cast(TValue*, (&luaO_nilobject_));
+                       : cast(TValue*, (&luaO_nilObject_));
             }
         }
 }
 
-static Table *getcurrenv(lua_State *L) {
+static Table *getCurrEnv(lua_State *L) {
     if (L->ci == L->base_ci)
         return hvalue(gt(L));
     else {
@@ -5299,7 +5352,7 @@ static Table *getcurrenv(lua_State *L) {
     }
 }
 
-int lua_checkstack(lua_State *L, int size) {
+int lua_checkStack(lua_State *L, int size) {
     int res = 1;
     if (size > 8000 || (L->top - L->base + size) > 8000)
         res = 0;
@@ -5311,18 +5364,18 @@ int lua_checkstack(lua_State *L, int size) {
     return res;
 }
 
-static lua_CFunction lua_atPanic(lua_State *L, lua_CFunction panicFunc) {
+lua_CFunction lua_atPanic(lua_State *L, lua_CFunction panicFunc) {
     lua_CFunction old;
     old = G(L)->panic;
     G(L)->panic = panicFunc;
     return old;
 }
 
-int lua_gettop(lua_State *L) {
+int lua_getTop(lua_State *L) {
     return cast_int(L->top - L->base);
 }
 
-void lua_settop(lua_State *L, int idx) {
+void lua_setTop(lua_State *L, int idx) {
     if (idx >= 0) {
         luai_apicheck(L, idx <= L->stack_last - L->base);
         while (L->top < L->base + idx)
@@ -5334,7 +5387,7 @@ void lua_settop(lua_State *L, int idx) {
     }
 }
 
-static void lua_remove(lua_State *L, int idx) {
+void lua_remove(lua_State *L, int idx) {
     StkId p;
     p = index2adr(L, idx);
     api_checkvalidindex(L, p);
@@ -5370,14 +5423,14 @@ void lua_replace(lua_State *L, int idx) {
     L->top--;
 }
 
-void lua_pushvalue(lua_State *L, int idx) {
+void lua_pushValue(lua_State *L, int idx) {
     setobj(L, L->top, index2adr(L, idx));
     api_incr_top(L);
 }
 
 int lua_type(lua_State *L, int idx) {
     StkId o = index2adr(L, idx);
-    return (o == (&luaO_nilobject_)) ? (-1) : ttype(o);
+    return (o == (&luaO_nilObject_)) ? (-1) : ttype(o);
 }
 
 const char *lua_typename(lua_State *L, int t) {
@@ -5385,6 +5438,10 @@ const char *lua_typename(lua_State *L, int t) {
     return (t == (-1)) ? "no value" : luaT_typenames[t];
 }
 
+int lua_iscfunction(lua_State *L, int idx) {
+    StkId o = index2adr(L, idx);
+    return iscfunction(o);
+}
 
 int lua_isnumber(lua_State *L, int idx) {
     TValue n;
@@ -5400,8 +5457,8 @@ int lua_isstring(lua_State *L, int idx) {
 int lua_rawequal(lua_State *L, int index1, int index2) {
     StkId o1 = index2adr(L, index1);
     StkId o2 = index2adr(L, index2);
-    return (o1 == (&luaO_nilobject_) || o2 == (&luaO_nilobject_)) ? 0
-                                                                  : luaO_rawequalObj(o1, o2);
+    return (o1 == (&luaO_nilObject_) || o2 == (&luaO_nilObject_)) ? 0
+                                                                  : luaO_rawEqualObj(o1, o2);
 }
 
 int lua_lessthan(lua_State *L, int index1, int index2) {
@@ -5409,7 +5466,7 @@ int lua_lessthan(lua_State *L, int index1, int index2) {
     int i;
     o1 = index2adr(L, index1);
     o2 = index2adr(L, index2);
-    i = (o1 == (&luaO_nilobject_) || o2 == (&luaO_nilobject_)) ? 0 : luaV_lessthan(L, o1, o2);
+    i = (o1 == (&luaO_nilObject_) || o2 == (&luaO_nilObject_)) ? 0 : luaV_lessthan(L, o1, o2);
     return i;
 }
 
@@ -5517,8 +5574,7 @@ void lua_pushstring(lua_State *L, const char *s) {
         lua_pushlstring(L, s, strlen(s));
 }
 
-static const char *lua_pushvfstring(lua_State *L, const char *fmt,
-                                    va_list argp) {
+const char *lua_pushvfstring(lua_State *L, const char *fmt, va_list argp) {
     const char *ret;
     luaC_checkGC(L);
     ret = luaO_pushvfstring(L, fmt, argp);
@@ -5539,7 +5595,7 @@ void lua_pushcclosure(lua_State *L, lua_CFunction fn, int n) {
     Closure *cl;
     luaC_checkGC(L);
     api_checknelems(L, n);
-    cl = luaF_newCclosure(L, n, getcurrenv(L));
+    cl = luaF_newCclosure(L, n, getCurrEnv(L));
     cl->c.f = fn;
     L->top -= n;
     while (n--) setobj(L, &cl->c.upvalue[n], L->top + n);
@@ -5640,7 +5696,7 @@ void lua_getfenv(lua_State *L, int idx) {
     api_incr_top(L);
 }
 
-static void lua_settable(lua_State *L, int idx) {
+void lua_settable(lua_State *L, int idx) {
     StkId t;
     api_checknelems(L, 2);
     t = index2adr(L, idx);
@@ -5779,7 +5835,7 @@ int lua_pcall(lua_State *L, int nargs, int nresults, int errfunc) {
     return status;
 }
 
-static int lua_load(lua_State *L, lua_Reader reader, void *data, const char *chunkname) {
+int lua_load(lua_State *L, lua_Reader reader, void *data, const char *chunkname) {
     ZIO z;
     int status;
     if (!chunkname)chunkname = "?";
@@ -5822,15 +5878,12 @@ void lua_concat(lua_State *L, int n) {
 void *lua_newuserdata(lua_State *L, size_t size) {
     Udata *u;
     luaC_checkGC(L);
-    u = luaS_newudata(L, size, getcurrenv(L));
+    u = luaS_newudata(L, size, getCurrEnv(L));
     setuvalue(L, L->top, u);
     api_incr_top(L);
     return u + 1;
 }
 
-static void luaI_openlib(lua_State *L, const char *libname, const luaL_Reg *l, int nup);
-
-static const char *luaL_findtable(lua_State *L, int idx, const char *fname, int szhint);
 
 int luaL_argerror(lua_State *L, int narg, const char *extramsg) {
     lua_Debug ar;
@@ -5879,33 +5932,19 @@ int luaL_error(lua_State *L, const char *fmt, ...) {
 }
 
 int luaL_newmetatable(lua_State *L, const char *tname) {
-    lua_getfield(L, (-10000), tname);
+    lua_getfield(L, LUA_REGISTRY_INDEX, tname);
     if (!lua_isnil(L, -1))
         return 0;
     lua_pop(L, 1);
     lua_newtable(L);
-    lua_pushvalue(L, -1);
-    lua_setfield(L, (-10000), tname);
+    lua_pushValue(L, -1);
+    lua_setfield(L, LUA_REGISTRY_INDEX, tname);
     return 1;
 }
 
-void *luaL_checkudata(lua_State *L, int ud, const char *tname) {
-    void *p = lua_touserdata(L, ud);
-    if (p != NULL) {
-        if (lua_getmetatable(L, ud)) {
-            lua_getfield(L, (-10000), tname);
-            if (lua_rawequal(L, -1, -2)) {
-                lua_pop(L, 2);
-                return p;
-            }
-        }
-    }
-    luaL_typerror(L, ud, tname);
-    return NULL;
-}
 
 void luaL_checkstack(lua_State *L, int space, const char *mes) {
-    if (!lua_checkstack(L, space))
+    if (!lua_checkStack(L, space))
         luaL_error(L, "stack overflow (%s)", mes);
 }
 
@@ -5914,116 +5953,6 @@ void luaL_checktype(lua_State *L, int narg, int t) {
         tag_error(L, narg, t);
 }
 
-void luaL_checkany(lua_State *L, int narg) {
-    if (lua_type(L, narg) == (-1))
-        luaL_argerror(L, narg, "value expected");
-}
-
-const char *luaL_checklstring(lua_State *L, int narg, size_t *len) {
-    const char *s = lua_tolstring(L, narg, len);
-    if (!s)tag_error(L, narg, 4);
-    return s;
-}
-
-const char *luaL_optlstring(lua_State *L, int narg,
-                            const char *def, size_t *len) {
-    if (lua_isnoneornil(L, narg)) {
-        if (len)
-            *len = (def ? strlen(def) : 0);
-        return def;
-    } else return luaL_checklstring(L, narg, len);
-}
-
-lua_Number luaL_checknumber(lua_State *L, int narg) {
-    lua_Number d = lua_tonumber(L, narg);
-    if (d == 0 && !lua_isnumber(L, narg))
-        tag_error(L, narg, 3);
-    return d;
-}
-
-lua_Integer luaL_checkinteger(lua_State *L, int narg) {
-    lua_Integer d = lua_tointeger(L, narg);
-    if (d == 0 && !lua_isnumber(L, narg))
-        tag_error(L, narg, 3);
-    return d;
-}
-
-lua_Integer luaL_optinteger(lua_State *L, int narg, lua_Integer def) {
-    return luaL_opt(L, luaL_checkinteger, narg, def);
-}
-
-int luaL_getmetafield(lua_State *L, int obj, const char *event) {
-    if (!lua_getmetatable(L, obj))
-        return 0;
-    lua_pushstring(L, event);
-    lua_rawget(L, -2);
-    if (lua_isnil(L, -1)) {
-        lua_pop(L, 2);
-        return 0;
-    } else {
-        lua_remove(L, -2);
-        return 1;
-    }
-}
-
-void luaL_register(lua_State *L, const char *libname, const luaL_Reg *l) {
-    luaI_openlib(L, libname, l, 0);
-}
-
-static int libsize(const luaL_Reg *l) {
-    int size = 0;
-    for (; l->name; l++)size++;
-    return size;
-}
-
-static void luaI_openlib(lua_State *L, const char *libname, const luaL_Reg *l, int nup) {
-    if (libname) {
-        int size = libsize(l);
-        luaL_findtable(L, (-10000), "_LOADED", 1);
-        lua_getfield(L, -1, libname);
-        if (!lua_istable(L, -1)) {
-            lua_pop(L, 1);
-            if (luaL_findtable(L, (-10002), libname, size) != NULL)
-                luaL_error(L, "name conflict for module "LUA_QL("%s"), libname);
-            lua_pushvalue(L, -1);
-            lua_setfield(L, -3, libname);
-        }
-        lua_remove(L, -2);
-        lua_insert(L, -(nup + 1));
-    }
-    for (; l->name; l++) {
-        int i;
-        for (i = 0; i < nup; i++)
-            lua_pushvalue(L, -nup);
-        lua_pushcclosure(L, l->func, nup);
-        lua_setfield(L, -(nup + 2), l->name);
-    }
-    lua_pop(L, nup);
-}
-
-static const char *luaL_findtable(lua_State *L, int idx, const char *fname, int szhint) {
-    const char *e;
-    lua_pushvalue(L, idx);
-    do {
-        e = strchr(fname, '.');
-        if (e == NULL)e = fname + strlen(fname);
-        lua_pushlstring(L, fname, e - fname);
-        lua_rawget(L, -2);
-        if (lua_isnil(L, -1)) {
-            lua_pop(L, 1);
-            lua_createTable(L, 0, (*e == '.' ? 1 : szhint));
-            lua_pushlstring(L, fname, e - fname);
-            lua_pushvalue(L, -2);
-            lua_settable(L, -4);
-        } else if (!lua_istable(L, -1)) {
-            lua_pop(L, 2);
-            return fname;
-        }
-        lua_remove(L, -2);
-        fname = e + 1;
-    } while (*e == '.');
-    return NULL;
-}
 
 #define bufflen(B)((B)->p-(B)->buffer)
 #define bufffree(B)((size_t)(BUFSIZ-bufflen(B)))
@@ -6126,7 +6055,7 @@ int luaL_loadfile(lua_State *L, const char *filename) {
     LoadF lf;
     int status, readstatus;
     int c;
-    int fnameindex = lua_gettop(L) + 1;
+    int fnameindex = lua_getTop(L) + 1;
     lf.extraline = 0;
     if (filename == NULL) {
         lua_pushliteral(L, "=stdin");
@@ -6153,7 +6082,7 @@ int luaL_loadfile(lua_State *L, const char *filename) {
     readstatus = ferror(lf.f);
     if (filename)fclose(lf.f);
     if (readstatus) {
-        lua_settop(L, fnameindex);
+        lua_setTop(L, fnameindex);
         return errfile(L, "read", fnameindex);
     }
     lua_remove(L, fnameindex);
@@ -6181,32 +6110,12 @@ int luaL_loadbuffer(lua_State *L, const char *buff, size_t size, const char *nam
     return lua_load(L, getS, &ls, name);
 }
 
-static void *l_alloc(void *ud, void *ptr, size_t oldSize, size_t newSize) {
-    UNUSED(ud);
-    UNUSED(oldSize);
-    if (newSize == 0) {
-        free(ptr);
-        return NULL;
-    }
-    return realloc(ptr, newSize);
-}
-
-static int panic(lua_State *L) {
-    fprintf(stderr, "PANIC: unprotected error in call to Lua API (%s)\n",
-            lua_tostring(L, -1));
-    return 0;
-}
-
-lua_State *luaL_newState() {
-    lua_State *L = lua_newState(l_alloc, NULL);
-    if (L) {
-        lua_atPanic(L, &panic);
-    }
-    return L;
-}
-
 extern const luaL_Reg bitLib[];
 extern const luaL_Reg luaLibs[];
+
+extern lua_State *luaL_newState();
+
+extern void luaL_register(lua_State *L, const char *libname, const luaL_Reg *l);
 
 static void luaL_openlibs(lua_State *L) {
     const luaL_Reg *lib = luaLibs;
