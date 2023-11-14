@@ -182,7 +182,6 @@ const luaL_Reg bitLib[] = {
 };
 
 
-
 static void tag_error(lua_State *L, int narg, int tag) {
     luaL_typerror(L, narg, lua_typename(L, tag));
 }
@@ -241,8 +240,6 @@ static void luaL_pushresult(luaL_Buffer *B) {
 }
 
 
-
-
 static void luaL_checkstack(lua_State *L, int space, const char *mes) {
     if (!lua_checkStack(L, space))
         luaL_error(L, "stack overflow (%s)", mes);
@@ -258,7 +255,6 @@ static int luaL_newmetatable(lua_State *L, const char *tname) {
     lua_setField(L, LUA_REGISTRY_INDEX, tname);
     return 1;
 }
-
 
 
 static void luaL_addvalue(luaL_Buffer *B) {
@@ -308,9 +304,8 @@ lua_State *luaL_newState() {
     return L;
 }
 
-
-
-static int libsize(const luaL_Reg *l) {
+// 求lib长度 遇到l->name == NULL停止
+static int libSize(const luaL_Reg *l) {
     int size = 0;
     for (; l->name; l++)size++;
     return size;
@@ -340,9 +335,9 @@ static const char *luaL_findtable(lua_State *L, int idx, const char *fname, int 
     return NULL;
 }
 
-static void luaI_openlib(lua_State *L, const char *libname, const luaL_Reg *l, int nup) {
+static void luaI_openLib(lua_State *L, const char *libname, const luaL_Reg *l, int nup) {
     if (libname) {
-        int size = libsize(l);
+        int size = libSize(l);
         luaL_findtable(L, LUA_REGISTRY_INDEX, "_LOADED", 1);
         lua_getField(L, -1, libname);
         if (!lua_istable(L, -1)) {
@@ -387,7 +382,7 @@ static int luaL_loadbuffer(lua_State *L, const char *buff, size_t size, const ch
 }
 
 void luaL_register(lua_State *L, const char *libname, const luaL_Reg *l) {
-    luaI_openlib(L, libname, l, 0);
+    luaI_openLib(L, libname, l, 0);
 }
 
 typedef struct LoadF {
@@ -416,7 +411,6 @@ static int errFile(lua_State *L, const char *what, int fileNameIndex) {
     lua_remove(L, fileNameIndex);
     return (5 + 1);
 }
-
 
 
 int luaL_loadfile(lua_State *L, const char *filename) {
@@ -751,7 +745,7 @@ static const char *matchbalance(MatchState *ms, const char *s,
     return NULL;
 }
 
-static const char *max_expand(MatchState *ms, const char *s,const char *p, const char *ep) {
+static const char *max_expand(MatchState *ms, const char *s, const char *p, const char *ep) {
     ptrdiff_t i = 0;
     while ((s + i) < ms->src_end && singlematch(uchar(*(s + i)), p, ep))
         i++;
@@ -763,7 +757,7 @@ static const char *max_expand(MatchState *ms, const char *s,const char *p, const
     return NULL;
 }
 
-static const char *min_expand(MatchState *ms, const char *s,const char *p, const char *ep) {
+static const char *min_expand(MatchState *ms, const char *s, const char *p, const char *ep) {
     for (;;) {
         const char *res = match(ms, s, ep + 1);
         if (res != NULL)
@@ -774,7 +768,7 @@ static const char *min_expand(MatchState *ms, const char *s,const char *p, const
     }
 }
 
-static const char *start_capture(MatchState *ms, const char *s,const char *p, int what) {
+static const char *start_capture(MatchState *ms, const char *s, const char *p, int what) {
     const char *res;
     int level = ms->level;
     if (level >= 32)luaL_error(ms->L, "too many captures");
@@ -786,7 +780,7 @@ static const char *start_capture(MatchState *ms, const char *s,const char *p, in
     return res;
 }
 
-static const char *end_capture(MatchState *ms, const char *s,const char *p) {
+static const char *end_capture(MatchState *ms, const char *s, const char *p) {
     int l = capture_to_close(ms);
     const char *res;
     ms->capture[l].len = s - ms->capture[l].init;
@@ -1242,7 +1236,6 @@ static int str_format(lua_State *L) {
     luaL_pushresult(&b);
     return 1;
 }
-
 
 
 const luaL_Reg strlib[] = {
@@ -1704,7 +1697,6 @@ static void getfunc(lua_State *L, int opt) {
 }
 
 
-
 static int luaB_setfenv(lua_State *L) {
     luaL_checktype(L, 2, 5);
     getfunc(L, 0);
@@ -1730,6 +1722,16 @@ static int luaB_setmetatable(lua_State *L) {
     lua_setTop(L, 2);
     lua_setmetatable(L, 1);
     return 1;
+}
+
+static int luaB_getmetatable(lua_State *L) {
+    luaL_checkany(L, 1);
+    if (!lua_getmetatable(L, 1)) {
+        lua_pushnil(L);
+        return 1;  /* no metatable */
+    }
+    luaL_getmetafield(L, 1, "__metatable");
+    return 1;  /* returns either __metatable field (if present) or metatable */
 }
 
 static int luaB_tonumber(lua_State *L) {
@@ -1780,18 +1782,19 @@ static int luaB_unpack(lua_State *L) {
 }
 
 static const luaL_Reg base_funcs[] = {
-        {"assert",       luaB_assert},
-        {"error",        luaB_error},
-        {"loadfile",     luaB_loadfile},
-        {"loadstring",   luaB_loadstring},
-        {"next",         luaB_next},
-        {"pcall",        luaB_pcall},
-        {"rawget",       luaB_rawget},
-        {"setfenv",      luaB_setfenv},
+        {"assert", luaB_assert},
+        {"error", luaB_error},
+        {"loadfile", luaB_loadfile},
+        {"loadstring", luaB_loadstring},
+        {"next", luaB_next},
+        {"pcall", luaB_pcall},
+        {"rawget", luaB_rawget},
+        {"setfenv", luaB_setfenv},
         {"setmetatable", luaB_setmetatable},
-        {"tonumber",     luaB_tonumber},
-        {"type",         luaB_type},
-        {"unpack",       luaB_unpack},
+        {"getmetatable", luaB_getmetatable},
+        {"tonumber", luaB_tonumber},
+        {"type", luaB_type},
+        {"unpack", luaB_unpack},
         {NULL, NULL}
 };
 
@@ -1852,7 +1855,7 @@ static int luaB_newproxy(lua_State *L) {
 }
 
 static void base_open(lua_State *L) {
-    lua_pushValue(L, (-10002));
+    lua_pushValue(L, LUA_GLOBALS_INDEX);
     lua_setglobal(L, "_G");
     luaL_register(L, "_G", base_funcs);
     lua_pushliteral(L, "Lua mini");

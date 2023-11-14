@@ -69,7 +69,13 @@ typedef unsigned long long U64;
 #define LUA_GLOBALS_INDEX        (-10002)                // 表示全局环境的索引
 #define LUA_UPVALUE_INDEX(i)    (LUA_GLOBALS_INDEX-(i))  // 计算上值的索引
 
+#define LUAI_MAXCCALLS		200     // lua调用c函数的最大调用栈
 
+#define LUA_YIELD	    1
+#define LUA_ERRRUN	    2
+#define LUA_ERRSYNTAX	3
+#define LUA_ERRMEM	    4
+#define LUA_ERRERR	    5
 
 #define LUA_QL(x)"'"x"'"
 

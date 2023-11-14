@@ -1278,11 +1278,11 @@ static int luaD_poscall(lua_State *L, StkId firstResult) {
 }
 
 static void luaD_call(lua_State *L, StkId func, int nResults) {
-    if (++L->nCcalls >= 200) {
-        if (L->nCcalls == 200)
+    if (++L->nCcalls >= LUAI_MAXCCALLS) {
+        if (L->nCcalls == LUAI_MAXCCALLS)
             luaG_runerror(L, "C stack overflow");
-        else if (L->nCcalls >= (200 + (200 >> 3)))
-            luaD_throw(L, 5);
+        else if (L->nCcalls >= (LUAI_MAXCCALLS + (LUAI_MAXCCALLS >> 3)))
+            luaD_throw(L, LUA_ERRERR);
     }
     if (luaD_precall(L, func, nResults) == 0)
         luaV_execute(L, 1);
@@ -1370,8 +1370,7 @@ static void luaS_resize(lua_State *L, int newSize) {
     tb->hash = newHash;
 }
 
-static TString *newlstr(lua_State *L, const char *str, size_t l,
-                        unsigned int h) {
+static TString *newlstr(lua_State *L, const char *str, size_t l, unsigned int h) {
     TString *ts;
     StringTable *tb;
     if (l + 1 > (((size_t) (~(size_t) 0) - 2) - sizeof(TString)) / sizeof(char))
@@ -1380,7 +1379,7 @@ static TString *newlstr(lua_State *L, const char *str, size_t l,
     ts->tsv.len = l;
     ts->tsv.hash = h;
     ts->tsv.marked = luaC_white(G(L));
-    ts->tsv.tt = 4;
+    ts->tsv.tt = LUA_TSTRING;
     ts->tsv.reserved = 0;
     memcpy(ts + 1, str, l * sizeof(char));
     ((char *) (ts + 1))[l] = '\0';
@@ -6016,10 +6015,11 @@ void lua_pushlstring(lua_State *L, const char *s, size_t len) {
 }
 
 void lua_pushstring(lua_State *L, const char *s) {
-    if (s == NULL)
+    if (s == NULL) {
         lua_pushnil(L);
-    else
+    } else {
         lua_pushlstring(L, s, strlen(s));
+    }
 }
 
 const char *lua_pushvfstring(lua_State *L, const char *fmt, va_list argp) {
@@ -6347,7 +6347,9 @@ int main(int argc, char *argv[]) {
     lua_State *L = luaL_newState();
     luaL_openlibs(L);
     luaL_register(L, "bit", bitLib);
-    if (argc < 2)return sizeof(void *);
+    if (argc < 2) {
+        return sizeof(void *);
+    }
     lua_createTable(L, 0, 1);
     lua_pushstring(L, argv[1]);
     lua_rawSetI(L, -2, 0);

@@ -8,6 +8,8 @@ local function tostring(value)
         return "<table>"
     elseif type(value) == "function" then
         return "<function>"
+    elseif type(value) == "userdata" then
+        return "userdata"
     else
         return "<nil>"
     end
@@ -71,4 +73,3 @@ print(c2())
 print(c2())
 print(c2())
 print("======== counter ==========\n")
-
