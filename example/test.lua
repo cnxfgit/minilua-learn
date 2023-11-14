@@ -1,9 +1,5 @@
--- �����������tostring
+-- 基础函数tostring
 local function tostring(value)
-    --local mt = getmetatable(value)
-    --if mt and mt.__tostring then
-    --    return mt.__tostring(value)
-    --end
     if type(value) == "string" then
         return value
     elseif type(value) == "number" then
@@ -17,25 +13,25 @@ local function tostring(value)
     end
 end
 
--- �����������print
+-- 基础函数print
 local function print(...)
-    local args = { ... } -- ������Ĳ������浽һ������
+    local args = { ... }
     for i, v in ipairs(args) do
-        io.write(tostring(v)) -- ������ת��Ϊ�ַ��������
+        io.write(tostring(v))
         if i < #args then
-            io.write("\t") -- �ڲ���֮������Ʊ���ָ�
+            io.write("\t")
         end
     end
 
-    io.write("\n") -- ������з�
+    io.write("\n")
 end
 
--- ��ӡ�汾
+-- lua版本
 print("======== _VERSION ==========")
 print("Version:", _VERSION)
 print("======== _VERSION ==========\n")
 
--- ��ӡȫ�ֱ���
+-- lua全局变量
 print("======== _G ==========")
 for i, _ in pairs(_G) do
     print(i)
@@ -55,6 +51,7 @@ local finish = os.clock()
 print("fib(30):", finish - begin)
 print("======== fib ==========\n")
 
+-- 闭包测试
 print("======== counter ==========")
 local function counter()
     local n = 0
